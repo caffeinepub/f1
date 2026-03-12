@@ -18,16 +18,16 @@ const HALF_TRACK = TRACK_WIDTH / 2;
 const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
 const FINISH_DISPLAY_FRAMES = 300; // 5 seconds
 
-// Starting grid positions (near WP[0] = {800, 100})
+// Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
 const GRID_POSITIONS: Point[] = [
-  { x: 770, y: 88 },
-  { x: 770, y: 112 },
-  { x: 700, y: 88 },
-  { x: 700, y: 112 },
-  { x: 630, y: 88 },
-  { x: 630, y: 112 },
+  { x: 2464, y: 288 },
+  { x: 2464, y: 352 },
+  { x: 2240, y: 288 },
+  { x: 2240, y: 352 },
+  { x: 2016, y: 288 },
+  { x: 2016, y: 352 },
 ];
-const START_HEADING = Math.atan2(100 - 95, 800 - 680); // toward WP[0] from WP[21]
+const START_HEADING = Math.atan2(320 - 304, 2560 - 2176); // toward WP[0] from WP[21]
 
 function createInitialState(): RaceState {
   const player: CarData = {
@@ -35,7 +35,7 @@ function createInitialState(): RaceState {
     y: GRID_POSITIONS[0].y,
     heading: START_HEADING,
     speed: 0,
-    maxSpeed: 8,
+    maxSpeed: 10,
     laps: 0,
     targetWP: 1,
     lapReady: false,
@@ -52,7 +52,7 @@ function createInitialState(): RaceState {
     y: GRID_POSITIONS[i + 1].y,
     heading: START_HEADING,
     speed: 0,
-    maxSpeed: 4.5 + Math.random() * 0.7,
+    maxSpeed: 9 + Math.random() * 1.4,
     laps: 0,
     targetWP: 1,
     lapReady: false,
@@ -81,7 +81,7 @@ function advanceWaypoint(car: CarData, finishCount: { val: number }) {
   const dx = wp.x - car.x;
   const dy = wp.y - car.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  const threshold = car.isPlayer ? 80 : 60;
+  const threshold = car.isPlayer ? 160 : 120;
 
   if (dist < threshold) {
     if (car.targetWP === 0 && car.lapReady) {
@@ -126,7 +126,7 @@ function updatePlayer(
 ) {
   if (car.finished) return;
   if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
-    car.speed = Math.min(car.speed + 0.3, car.maxSpeed);
+    car.speed = Math.min(car.speed + 0.18, car.maxSpeed);
   } else if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
     car.speed = Math.max(car.speed - 0.5, -2);
   } else {
@@ -196,6 +196,145 @@ function getTrackNormal(i: number): Point {
   return { x: -dy / len, y: dx / len };
 }
 
+// ── Draw background (daytime) ─────────────────────────────────────────────────
+function drawBackground(ctx: CanvasRenderingContext2D) {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  sky.addColorStop(0, "#87CEEB");
+  sky.addColorStop(1, "#d0eeff");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Grass
+  ctx.fillStyle = "#4a7c3f";
+  ctx.fillRect(0, CANVAS_H * 0.55, CANVAS_W, CANVAS_H * 0.45);
+
+  // Grass highlight band
+  ctx.fillStyle = "#5a9e4e";
+  ctx.fillRect(0, CANVAS_H * 0.55, CANVAS_W, 18);
+}
+
+// ── Draw grandstand audience ──────────────────────────────────────────────────
+const CROWD_PALETTE = [
+  "#E8002D",
+  "#3671C6",
+  "#FF8000",
+  "#FFFFFF",
+  "#FFFF00",
+  "#006F62",
+  "#FF69B4",
+  "#C0C0C0",
+];
+
+// Stand indices (waypoint indices where stands are placed)
+const STAND_WP_INDICES = [0, 3, 6, 9, 12, 15, 18, 20];
+
+function drawAudience(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  camY: number,
+) {
+  const STAND_OFFSET = 300; // perpendicular offset from track center
+  const STAND_W = 400; // world units wide
+  const STAND_DEPTH = 120; // world units deep
+  const ROWS = 4;
+  const COLS = 25;
+  const DOT_SIZE = 14; // world units per crowd dot
+
+  for (const wpIdx of STAND_WP_INDICES) {
+    const wp = WAYPOINTS[wpIdx];
+    const norm = getTrackNormal(wpIdx);
+
+    // Tangent along track
+    const next = WAYPOINTS[(wpIdx + 1) % N];
+    const tx = next.x - wp.x;
+    const ty = next.y - wp.y;
+    const tLen = Math.sqrt(tx * tx + ty * ty) || 1;
+    const tang = { x: tx / tLen, y: ty / tLen };
+
+    // Draw stands on both sides (+norm and -norm)
+    for (const side of [1, -1]) {
+      const cx = wp.x + norm.x * STAND_OFFSET * side;
+      const cy = wp.y + norm.y * STAND_OFFSET * side;
+
+      // Screen coordinates of stand center
+      const sx = cx - camX;
+      const sy = cy - camY;
+
+      // Skip if completely off screen
+      if (sx < -STAND_W - 80 || sx > CANVAS_W + STAND_W + 80) continue;
+      if (sy < -STAND_DEPTH - 80 || sy > CANVAS_H + STAND_DEPTH + 80) continue;
+
+      ctx.save();
+      ctx.translate(sx, sy);
+      // Rotate to align with track tangent
+      ctx.rotate(Math.atan2(tang.y, tang.x));
+
+      // Grandstand structure (grey backdrop)
+      ctx.fillStyle = "#6b7280";
+      ctx.fillRect(
+        -STAND_W / 2 - 4,
+        -(STAND_DEPTH / 2) * side - 8,
+        STAND_W + 8,
+        STAND_DEPTH + 12,
+      );
+
+      // Grandstand roof tint
+      ctx.fillStyle = "#4b5563";
+      ctx.fillRect(
+        -STAND_W / 2 - 4,
+        -(STAND_DEPTH / 2) * side - 8,
+        STAND_W + 8,
+        10,
+      );
+
+      // Crowd rows
+      for (let row = 0; row < ROWS; row++) {
+        for (let col = 0; col < COLS; col++) {
+          const colorIdx = (col + row * 3) % CROWD_PALETTE.length;
+          ctx.fillStyle = CROWD_PALETTE[colorIdx];
+
+          const dotX = -STAND_W / 2 + col * (STAND_W / COLS) + 2;
+          const dotY = -STAND_DEPTH / 2 + row * (STAND_DEPTH / ROWS) + 4;
+
+          ctx.fillRect(dotX, dotY, DOT_SIZE - 1, DOT_SIZE - 1);
+
+          // Head circle on top
+          ctx.fillStyle = "#f5cba7";
+          ctx.beginPath();
+          ctx.arc(dotX + (DOT_SIZE - 1) / 2, dotY - 2, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Team flags above the stands (alternating colours)
+      const flagColors = [
+        "#E8002D",
+        "#3671C6",
+        "#FF8000",
+        "#006F62",
+        "#FFFF00",
+      ];
+      for (let f = 0; f < 5; f++) {
+        const flagX = -STAND_W / 2 + (f + 0.5) * (STAND_W / 5);
+        const flagY = -STAND_DEPTH / 2 - 20;
+        // Pole
+        ctx.strokeStyle = "#9ca3af";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(flagX, flagY);
+        ctx.lineTo(flagX, flagY - 18);
+        ctx.stroke();
+        // Flag rectangle
+        ctx.fillStyle = flagColors[f % flagColors.length];
+        ctx.fillRect(flagX + 1, flagY - 18, 14, 8);
+      }
+
+      ctx.restore();
+    }
+  }
+}
+
 // ── Draw track ───────────────────────────────────────────────────────────────
 function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   const path = buildSplinePath(WAYPOINTS, camX, camY);
@@ -229,9 +368,14 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   ctx.setLineDash([]);
   ctx.lineDashOffset = 0;
 
-  // Armco barriers (silver)
-  ctx.lineWidth = TRACK_WIDTH + 28;
+  // ── Outer armco barrier (silver crash barrier) ──
+  ctx.lineWidth = TRACK_WIDTH + 40;
   ctx.strokeStyle = "#8a9aaa";
+  ctx.stroke(path);
+
+  // Thin white highlight line on top of armco
+  ctx.lineWidth = TRACK_WIDTH + 36;
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
   ctx.stroke(path);
 
   // Red/white kerb stripe
@@ -255,6 +399,88 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   ctx.lineWidth = TRACK_WIDTH - 20;
   ctx.strokeStyle = "#333333";
   ctx.stroke(path);
+
+  // ── Inner tyre wall (red/white alternating dashes) ──
+  const tyreWallWidth = TRACK_WIDTH - 8;
+  ctx.lineWidth = tyreWallWidth;
+  const tyreLen = 12;
+  ctx.setLineDash([tyreLen, tyreLen]);
+  ctx.strokeStyle = "#cc0000";
+  ctx.stroke(path);
+  ctx.lineDashOffset = tyreLen;
+  ctx.strokeStyle = "#ffffff";
+  ctx.stroke(path);
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // Re-draw track surface over inner tyre wall (tyre wall is only at the very edge)
+  ctx.lineWidth = TRACK_WIDTH - 16;
+  ctx.strokeStyle = "#2d2d2d";
+  ctx.stroke(path);
+
+  ctx.lineWidth = TRACK_WIDTH - 32;
+  ctx.strokeStyle = "#333333";
+  ctx.stroke(path);
+
+  // ── Tyre stack circles at every 3rd waypoint (inner barrier decoration) ──
+  ctx.shadowBlur = 0;
+  for (let i = 0; i < N; i += 3) {
+    const wp = WAYPOINTS[i];
+    const norm = getTrackNormal(i);
+    // Place tyre stacks just inside the inner edge of the track
+    const innerOffset = HALF_TRACK - 14;
+    for (const side of [1, -1]) {
+      const tx = wp.x + norm.x * innerOffset * side - camX;
+      const ty = wp.y + norm.y * innerOffset * side - camY;
+      // Skip if off-screen
+      if (tx < -30 || tx > CANVAS_W + 30 || ty < -30 || ty > CANVAS_H + 30)
+        continue;
+      // Stack of 3 tyres
+      for (let stack = 0; stack < 3; stack++) {
+        const stackOffset = stack * 5;
+        ctx.beginPath();
+        ctx.arc(tx, ty - stackOffset, 7, 0, Math.PI * 2);
+        ctx.fillStyle = stack % 2 === 0 ? "#cc0000" : "#ffffff";
+        ctx.fill();
+        ctx.strokeStyle = "#222222";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ── Pit lane box near waypoint 2 ──
+  const pitWP = WAYPOINTS[2];
+  const pitNorm = getTrackNormal(2);
+  const pitX = pitWP.x + pitNorm.x * (HALF_TRACK - 10) - camX;
+  const pitY = pitWP.y + pitNorm.y * (HALF_TRACK - 10) - camY;
+  if (
+    pitX > -100 &&
+    pitX < CANVAS_W + 100 &&
+    pitY > -100 &&
+    pitY < CANVAS_H + 100
+  ) {
+    ctx.save();
+    ctx.translate(pitX, pitY);
+    const pitAngle = Math.atan2(
+      WAYPOINTS[3].y - pitWP.y,
+      WAYPOINTS[3].x - pitWP.x,
+    );
+    ctx.rotate(pitAngle + Math.PI / 2);
+    // Yellow pit box
+    ctx.fillStyle = "#ffff00";
+    ctx.fillRect(-20, -10, 40, 20);
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(-20, -10, 40, 20);
+    // PIT label
+    ctx.fillStyle = "#000000";
+    ctx.font = "bold 10px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("PIT", 0, 0);
+    ctx.restore();
+  }
 
   // Dashed center line
   ctx.lineWidth = 2;
@@ -307,7 +533,31 @@ function drawCar(
   car: CarData,
   sx: number,
   sy: number,
+  boostActive: boolean,
 ) {
+  // ── Boost pulse rings (drawn before car so they appear behind) ──
+  if (boostActive && car.isPlayer) {
+    const pulsePhase = (Date.now() / 80) % (Math.PI * 2);
+    const rings = [
+      { baseR: 24, alpha: 0.7 },
+      { baseR: 36, alpha: 0.45 },
+      { baseR: 50, alpha: 0.25 },
+    ];
+    for (let r = 0; r < rings.length; r++) {
+      const ring = rings[r];
+      const pulsedR = ring.baseR + Math.sin(pulsePhase + r * 0.9) * 5;
+      ctx.save();
+      ctx.shadowColor = "#ffd700";
+      ctx.shadowBlur = 20;
+      ctx.strokeStyle = `rgba(255,215,0,${ring.alpha})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, pulsedR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate(car.heading + Math.PI / 2);
@@ -315,7 +565,7 @@ function drawCar(
   if (car.isPlayer) {
     // Triple glow layers
     ctx.shadowColor = car.glowColor;
-    ctx.shadowBlur = 28;
+    ctx.shadowBlur = boostActive ? 40 : 28;
     ctx.fillStyle = car.color;
     ctx.fillRect(-8, -16, 16, 32);
     ctx.shadowBlur = 16;
@@ -371,9 +621,9 @@ function drawCar(
 
   if (car.isPlayer) {
     // Glowing rim detail
-    ctx.strokeStyle = car.glowColor;
+    ctx.strokeStyle = boostActive ? "#ffd700" : car.glowColor;
     ctx.lineWidth = 1;
-    ctx.shadowColor = car.glowColor;
+    ctx.shadowColor = boostActive ? "#ffd700" : car.glowColor;
     ctx.shadowBlur = 6;
     ctx.strokeRect(-10, -10, 4, 8);
     ctx.strokeRect(6, -10, 4, 8);
@@ -382,6 +632,244 @@ function drawCar(
   }
 
   ctx.restore();
+}
+
+// ── Draw rear view mirror ────────────────────────────────────────────────────
+function drawRearView(
+  ctx: CanvasRenderingContext2D,
+  cars: CarData[],
+  player: CarData,
+) {
+  const MW = 180;
+  const MH = 90;
+  const MX = CANVAS_W / 2 - MW / 2;
+  const MY = 8;
+  const RADIUS = 12;
+
+  ctx.save();
+
+  // ── Chrome border (drawn before clip so it shows over the mirror content) ──
+  // Outer chrome glow
+  ctx.shadowColor = "rgba(200,220,255,0.6)";
+  ctx.shadowBlur = 8;
+  ctx.strokeStyle = "#b8c8d8";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.roundRect(MX - 2, MY - 2, MW + 4, MH + 4, RADIUS + 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Inner chrome highlight
+  ctx.strokeStyle = "#d8e8f0";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(MX - 1, MY - 1, MW + 2, MH + 2, RADIUS + 1);
+  ctx.stroke();
+
+  // ── Clip to mirror shape ──
+  ctx.beginPath();
+  ctx.roundRect(MX, MY, MW, MH, RADIUS);
+  ctx.clip();
+
+  // ── Background ──
+  // Slightly blue-tinted dark to simulate camera/glass look
+  ctx.fillStyle = "#0a0f18";
+  ctx.fillRect(MX, MY, MW, MH);
+
+  // ── Draw a simplified track strip (asphalt-colored band) ──
+  // The track strip is drawn in world space relative to player
+  // We rotate the view 180 degrees (looking backward)
+  const mirrorCX = MX + MW / 2;
+  const mirrorCY = MY + MH / 2;
+
+  ctx.save();
+  ctx.translate(mirrorCX, mirrorCY);
+  // Rotate 180 degrees + player heading so we look behind the player
+  ctx.rotate(player.heading + Math.PI / 2 + Math.PI);
+
+  // Scale: world units → mirror pixels
+  // Show roughly ±120 world units wide, ±180 world units tall (behind)
+  const WORLD_VIEW_W = 240;
+  const WORLD_VIEW_H = 360;
+  const scaleX = MW / WORLD_VIEW_W;
+  const scaleY = MH / WORLD_VIEW_H;
+  const scale = Math.min(scaleX, scaleY);
+
+  ctx.scale(scale, scale);
+
+  // Player is at origin (center of mirror world space)
+  // We offset so player appears at bottom-center of mirror
+  // (which becomes top-center after 180° rotation)
+  ctx.translate(0, -WORLD_VIEW_H * 0.35);
+
+  // Track strip — approximate road surface behind player
+  const trackW = TRACK_WIDTH * 0.9;
+  ctx.fillStyle = "#2a2a2a";
+  ctx.fillRect(-trackW / 2, -WORLD_VIEW_H, trackW, WORLD_VIEW_H * 2);
+
+  // Track surface highlight
+  ctx.fillStyle = "#303030";
+  ctx.fillRect(-trackW / 2 + 6, -WORLD_VIEW_H, trackW - 12, WORLD_VIEW_H * 2);
+
+  // Centre line dashes
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 3 / scale;
+  ctx.setLineDash([20, 30]);
+  ctx.beginPath();
+  ctx.moveTo(0, -WORLD_VIEW_H);
+  ctx.lineTo(0, WORLD_VIEW_H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Kerb stripes (left & right edges)
+  ctx.lineWidth = 6 / scale;
+  ctx.setLineDash([16, 16]);
+  ctx.strokeStyle = "#e8002d";
+  ctx.beginPath();
+  ctx.moveTo(-trackW / 2, -WORLD_VIEW_H);
+  ctx.lineTo(-trackW / 2, WORLD_VIEW_H);
+  ctx.stroke();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineDashOffset = 16;
+  ctx.beginPath();
+  ctx.moveTo(-trackW / 2, -WORLD_VIEW_H);
+  ctx.lineTo(-trackW / 2, WORLD_VIEW_H);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#e8002d";
+  ctx.lineDashOffset = 0;
+  ctx.beginPath();
+  ctx.moveTo(trackW / 2, -WORLD_VIEW_H);
+  ctx.lineTo(trackW / 2, WORLD_VIEW_H);
+  ctx.stroke();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineDashOffset = 16;
+  ctx.beginPath();
+  ctx.moveTo(trackW / 2, -WORLD_VIEW_H);
+  ctx.lineTo(trackW / 2, WORLD_VIEW_H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // ── Draw AI cars behind the player ──
+  // In the rotated/scaled coordinate system, the player is at (0, 0) offset.
+  // We need to transform each car's world position relative to the player,
+  // then rotate by the same mirror transform.
+  for (const car of cars) {
+    if (car.isPlayer) continue;
+
+    // World-space offset from player
+    const wdx = car.x - player.x;
+    const wdy = car.y - player.y;
+
+    // Rotate by -(player.heading + PI/2 + PI) to get into mirror local space
+    const mirrorAngle = -(player.heading + Math.PI / 2 + Math.PI);
+    const lx = wdx * Math.cos(mirrorAngle) - wdy * Math.sin(mirrorAngle);
+    const ly = wdx * Math.sin(mirrorAngle) + wdy * Math.cos(mirrorAngle);
+
+    // Only show cars that appear behind (positive ly in mirror space = ahead in mirror = behind player)
+    // We'll show all nearby cars within a generous range
+    const dist = Math.sqrt(wdx * wdx + wdy * wdy);
+    if (dist > 350) continue;
+
+    // Car position in mirror coords (already translated by offset above)
+    const carX = lx;
+    const carY = ly;
+
+    // Draw a small car shape
+    ctx.save();
+    ctx.translate(carX, carY);
+    // Rotate car in mirror space (car heading relative to mirror view)
+    const carMirrorHeading =
+      car.heading - (player.heading + Math.PI / 2 + Math.PI);
+    ctx.rotate(carMirrorHeading + Math.PI / 2);
+
+    // Glow effect
+    ctx.shadowColor = car.color;
+    ctx.shadowBlur = 8;
+
+    // Body
+    ctx.fillStyle = car.color;
+    ctx.beginPath();
+    ctx.roundRect(-4, -9, 8, 18, 2);
+    ctx.fill();
+
+    // Front wing
+    ctx.fillRect(-7, -10, 14, 3);
+
+    // Rear wing
+    ctx.fillRect(-6, 6, 12, 3);
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // ── Player car indicator at bottom of mirror ──
+  ctx.save();
+  ctx.shadowColor = "#00ff80";
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = "#00ff80";
+  ctx.beginPath();
+  ctx.roundRect(-5, -8, 10, 16, 2);
+  ctx.fill();
+  ctx.fillRect(-8, -9, 16, 3); // front wing
+  ctx.fillRect(-7, 7, 14, 3); // rear wing
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  ctx.restore(); // restore mirror camera transform
+
+  // ── Scanline effect for camera feel ──
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  for (let scanY = MY; scanY < MY + MH; scanY += 3) {
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(MX, scanY, MW, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  // ── Vignette at edges ──
+  const vignette = ctx.createRadialGradient(
+    mirrorCX,
+    mirrorCY,
+    MW * 0.2,
+    mirrorCX,
+    mirrorCY,
+    MW * 0.72,
+  );
+  vignette.addColorStop(0, "rgba(0,0,0,0)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.45)");
+  ctx.fillStyle = vignette;
+  ctx.fillRect(MX, MY, MW, MH);
+  ctx.restore();
+
+  // ── "REAR" label ──
+  ctx.save();
+  ctx.font = "bold 9px monospace";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(180,210,255,0.7)";
+  ctx.letterSpacing = "2px";
+  ctx.fillText("◀ REAR CAM ▶", mirrorCX, MY + MH - 6);
+  ctx.restore();
+
+  // ── Outer frame border (drawn last so it sits on top) ──
+  ctx.save();
+  ctx.strokeStyle = "rgba(160,190,220,0.9)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(MX, MY, MW, MH, RADIUS);
+  ctx.stroke();
+  // Inner bevel highlight (top-left lighter)
+  const bevel = ctx.createLinearGradient(MX, MY, MX + MW, MY + MH);
+  bevel.addColorStop(0, "rgba(255,255,255,0.25)");
+  bevel.addColorStop(0.4, "rgba(255,255,255,0.05)");
+  bevel.addColorStop(1, "rgba(0,0,0,0.2)");
+  ctx.strokeStyle = bevel;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.restore(); // main save
 }
 
 // ── Draw minimap ─────────────────────────────────────────────────────────────
@@ -400,10 +888,10 @@ function drawMinimap(ctx: CanvasRenderingContext2D, cars: CarData[]) {
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  const worldMinX = 80;
-  const worldMinY = 80;
-  const worldW = 1430;
-  const worldH = 970;
+  const worldMinX = 256;
+  const worldMinY = 256;
+  const worldW = 4576;
+  const worldH = 3264;
   const scaleX = mw / worldW;
   const scaleY = mh / worldH;
 
@@ -463,6 +951,7 @@ function drawHUD(
   ctx: CanvasRenderingContext2D,
   state: RaceState,
   playerSpeedPx: number,
+  boostTimer: number,
 ) {
   const player = state.cars[0];
   const currentLap = Math.min(player.laps + 1, TOTAL_LAPS);
@@ -524,6 +1013,29 @@ function drawHUD(
   ctx.font = "bold 11px monospace";
   ctx.fillStyle = "rgba(0,255,128,0.7)";
   ctx.fillText("TITOO", hudX + 110, hudY + 68);
+
+  // ── OVERTAKE! banner ──
+  if (boostTimer > 0) {
+    const fadeAlpha = Math.min(1, boostTimer / 20); // fade out in last 20 frames
+    ctx.save();
+    ctx.globalAlpha = fadeAlpha;
+    ctx.textAlign = "center";
+
+    // Glow backdrop
+    ctx.shadowColor = "#ffd700";
+    ctx.shadowBlur = 30;
+    ctx.font = "bold 42px monospace";
+    ctx.fillStyle = "#ffd700";
+    ctx.fillText("OVERTAKE!", CANVAS_W / 2, 120);
+
+    // Inner bright core
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = "#fffacd";
+    ctx.fillText("OVERTAKE!", CANVAS_W / 2, 120);
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
 }
 
 // ── Draw countdown ───────────────────────────────────────────────────────────
@@ -644,12 +1156,6 @@ function drawFinishScreen(
   ctx.restore();
 }
 
-// ── Draw background ───────────────────────────────────────────────────────────
-function drawBackground(ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = "#0d1f0d";
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-}
-
 // ── Wheel rotation state ─────────────────────────────────────────────────────
 interface WheelRotation {
   z: number; // left/right tilt (rotateZ)
@@ -660,8 +1166,8 @@ interface WheelRotation {
 function SteeringWheelSVG({ rotation }: { rotation: WheelRotation }) {
   return (
     <svg
-      width="120"
-      height="110"
+      width="170"
+      height="160"
       viewBox="0 0 120 110"
       style={{
         transform: `perspective(300px) rotateZ(${rotation.z}deg) rotateX(${rotation.x}deg)`,
@@ -796,6 +1302,10 @@ export default function F1Game({
   const rafRef = useRef<number>(0);
   const goTimerRef = useRef<number>(0); // frames to show GO!
   const finishCountRef = useRef({ val: 0 });
+
+  // Boost effect refs
+  const boostTimerRef = useRef<number>(0);
+  const prevSortedIdxRef = useRef<number[]>([0, 1, 2, 3, 4, 5]);
 
   // Steering wheel 2D rotation state
   const [wheelRotation, setWheelRotation] = useState<WheelRotation>({
@@ -1008,6 +1518,22 @@ export default function F1Game({
         s.playerPos = playerPos;
         s.currentLap = currentLap;
 
+        // ── Detect overtake (player position index improved) ──
+        const prevPlayerSortedPos = prevSortedIdxRef.current.findIndex(
+          (i) => i === 0,
+        );
+        const currPlayerSortedPos = s.sortedIdx.findIndex((i) => i === 0);
+        if (currPlayerSortedPos < prevPlayerSortedPos) {
+          // Player moved up in rankings — overtake!
+          boostTimerRef.current = 90;
+        }
+        prevSortedIdxRef.current = [...s.sortedIdx];
+
+        // Decrement boost timer
+        if (boostTimerRef.current > 0) {
+          boostTimerRef.current = Math.max(0, boostTimerRef.current - 1);
+        }
+
         // Report to App
         onScoreChange(ptsForPos, currentLap, playerPos);
 
@@ -1036,25 +1562,29 @@ export default function F1Game({
       const camY = player.y - CANVAS_H / 2;
 
       drawBackground(ctx);
+      drawAudience(ctx, camX, camY);
       drawTrack(ctx, camX, camY);
       drawStartLine(ctx, camX, camY);
 
       // Draw cars (sorted back-to-front by Y for visual layering)
       const drawOrder = [...s.cars].sort((a, b) => a.y - b.y);
+      const boostActive = boostTimerRef.current > 0;
       for (const car of drawOrder) {
-        drawCar(ctx, car, car.x - camX, car.y - camY);
+        drawCar(ctx, car, car.x - camX, car.y - camY, boostActive);
       }
 
       // HUD (fixed position, reset transforms)
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       if (s.phase === "racing" || s.phase === "finished") {
-        drawHUD(ctx, s, player.speed);
+        drawHUD(ctx, s, player.speed, boostTimerRef.current);
         drawMinimap(ctx, s.cars);
+        drawRearView(ctx, s.cars, player);
       }
 
       if (s.phase === "countdown") {
-        drawHUD(ctx, s, 0);
+        drawHUD(ctx, s, 0, 0);
         drawMinimap(ctx, s.cars);
+        drawRearView(ctx, s.cars, player);
         drawCountdown(ctx, s.countdown);
       }
 
@@ -1138,11 +1668,11 @@ export default function F1Game({
               display: "grid",
               gridTemplateColumns: "1fr 1fr 1fr",
               gridTemplateRows: "1fr 1fr",
-              width: 72,
+              width: 100,
               gap: 2,
               textAlign: "center",
               fontFamily: "monospace",
-              fontSize: 11,
+              fontSize: 13,
               fontWeight: 700,
               userSelect: "none",
             }}
@@ -1218,7 +1748,7 @@ export default function F1Game({
                 background: "rgba(0,10,5,0.78)",
                 border: `1.5px solid rgba(0,255,128,${Math.abs(wheelRotation.z) > 5 || Math.abs(wheelRotation.x) > 5 ? "0.75" : "0.35"})`,
                 borderRadius: "50%",
-                padding: 8,
+                padding: 14,
                 backdropFilter: "blur(6px)",
                 boxShadow: `0 0 20px ${getWheelGlowColor()}, inset 0 0 12px rgba(0,0,0,0.5)`,
                 transition: "box-shadow 0.1s ease, border-color 0.1s ease",
@@ -1231,7 +1761,7 @@ export default function F1Game({
           {/* Direction label below wheel */}
           <div
             style={{
-              fontSize: 10,
+              fontSize: 12,
               fontFamily: "monospace",
               color:
                 directionHint === "▼ BRAKE"
@@ -1248,7 +1778,7 @@ export default function F1Game({
                     : "0 0 6px rgba(0,255,128,0.5)"
                   : "none",
               transition: "color 0.1s, text-shadow 0.1s",
-              minWidth: 72,
+              minWidth: 100,
               textAlign: "center",
             }}
           >
