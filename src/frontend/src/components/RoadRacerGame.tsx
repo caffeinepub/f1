@@ -11,12 +11,15 @@ import {
   TOTAL_LAPS,
   TRACK_WIDTH,
   WAYPOINTS,
+  WAYPOINTS_STAGE2,
 } from "../hooks/useRoadRacer";
 
-const N = WAYPOINTS.length;
+// mutable module-level waypoints – updated by F1Game based on stage prop
+let _WP: Point[] = WAYPOINTS;
+let N = _WP.length;
 const HALF_TRACK = TRACK_WIDTH / 2;
 const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
-const FINISH_DISPLAY_FRAMES = 300; // 5 seconds
+const FINISH_DISPLAY_FRAMES = 120; // 2 seconds
 
 // Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
 const GRID_POSITIONS: Point[] = [
@@ -77,7 +80,7 @@ function createInitialState(): RaceState {
 }
 
 function advanceWaypoint(car: CarData, finishCount: { val: number }) {
-  const wp = WAYPOINTS[car.targetWP];
+  const wp = _WP[car.targetWP];
   const dx = wp.x - car.x;
   const dy = wp.y - car.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -97,12 +100,15 @@ function advanceWaypoint(car: CarData, finishCount: { val: number }) {
   }
   if (car.targetWP >= Math.floor(N / 2)) {
     car.lapReady = true;
+  } else if (car.targetWP > 0) {
+    // Reset lapReady in the first half of the track (prevents any edge-case double counting)
+    car.lapReady = false;
   }
 }
 
 function updateAI(car: CarData, finishCount: { val: number }) {
   if (car.finished) return;
-  const wp = WAYPOINTS[car.targetWP];
+  const wp = _WP[car.targetWP];
   const dx = wp.x - car.x;
   const dy = wp.y - car.y;
 
@@ -123,18 +129,31 @@ function updatePlayer(
   car: CarData,
   keys: Set<string>,
   finishCount: { val: number },
+  steerIntensity = 1.0,
+  accelIntensity = 1.0,
 ) {
   if (car.finished) return;
+
+  const accel = 0.22 * accelIntensity;
+
   if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
-    car.speed = Math.min(car.speed + 0.18, car.maxSpeed);
+    car.speed = Math.min(car.speed + accel, car.maxSpeed);
   } else if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
-    car.speed = Math.max(car.speed - 0.5, -2);
+    // Stronger braking for better control
+    car.speed = Math.max(car.speed - 0.65, -2);
   } else {
-    car.speed *= 0.97;
+    // Slightly quicker natural deceleration (0.97 -> 0.96)
+    car.speed *= 0.96;
   }
 
-  if (Math.abs(car.speed) > 0.3) {
-    const steer = 0.042 * (Math.abs(car.speed) / car.maxSpeed + 0.3);
+  if (Math.abs(car.speed) > 0.2) {
+    // Base steer rate increased for better grip; analog intensity scales it
+    const baseSteer = 0.062;
+    // Speed-dependent: full grip at moderate speed, slight reduction at max
+    const speedRatio = Math.abs(car.speed) / car.maxSpeed;
+    const gripFactor = 1.0 - speedRatio * 0.25; // up to 25% less turn at top speed
+    const steer = baseSteer * gripFactor * steerIntensity;
+
     if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) {
       car.heading -= steer;
     }
@@ -188,8 +207,8 @@ function buildSplinePath(points: Point[], camX: number, camY: number): Path2D {
 }
 
 function getTrackNormal(i: number): Point {
-  const prev = WAYPOINTS[(i - 1 + N) % N];
-  const next = WAYPOINTS[(i + 1) % N];
+  const prev = _WP[(i - 1 + N) % N];
+  const next = _WP[(i + 1) % N];
   const dx = next.x - prev.x;
   const dy = next.y - prev.y;
   const len = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -242,11 +261,11 @@ function drawAudience(
   const DOT_SIZE = 14; // world units per crowd dot
 
   for (const wpIdx of STAND_WP_INDICES) {
-    const wp = WAYPOINTS[wpIdx];
+    const wp = _WP[wpIdx];
     const norm = getTrackNormal(wpIdx);
 
     // Tangent along track
-    const next = WAYPOINTS[(wpIdx + 1) % N];
+    const next = _WP[(wpIdx + 1) % N];
     const tx = next.x - wp.x;
     const ty = next.y - wp.y;
     const tLen = Math.sqrt(tx * tx + ty * ty) || 1;
@@ -337,7 +356,7 @@ function drawAudience(
 
 // ── Draw track ───────────────────────────────────────────────────────────────
 function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
-  const path = buildSplinePath(WAYPOINTS, camX, camY);
+  const path = buildSplinePath(_WP, camX, camY);
 
   // Crowd / grandstand strips (outside barriers)
   ctx.lineWidth = TRACK_WIDTH + 130;
@@ -425,7 +444,7 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   // ── Tyre stack circles at every 3rd waypoint (inner barrier decoration) ──
   ctx.shadowBlur = 0;
   for (let i = 0; i < N; i += 3) {
-    const wp = WAYPOINTS[i];
+    const wp = _WP[i];
     const norm = getTrackNormal(i);
     // Place tyre stacks just inside the inner edge of the track
     const innerOffset = HALF_TRACK - 14;
@@ -450,7 +469,7 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   }
 
   // ── Pit lane box near waypoint 2 ──
-  const pitWP = WAYPOINTS[2];
+  const pitWP = _WP[2];
   const pitNorm = getTrackNormal(2);
   const pitX = pitWP.x + pitNorm.x * (HALF_TRACK - 10) - camX;
   const pitY = pitWP.y + pitNorm.y * (HALF_TRACK - 10) - camY;
@@ -462,10 +481,7 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
   ) {
     ctx.save();
     ctx.translate(pitX, pitY);
-    const pitAngle = Math.atan2(
-      WAYPOINTS[3].y - pitWP.y,
-      WAYPOINTS[3].x - pitWP.x,
-    );
+    const pitAngle = Math.atan2(_WP[3].y - pitWP.y, _WP[3].x - pitWP.x);
     ctx.rotate(pitAngle + Math.PI / 2);
     // Yellow pit box
     ctx.fillStyle = "#ffff00";
@@ -496,7 +512,7 @@ function drawStartLine(
   camX: number,
   camY: number,
 ) {
-  const wp = WAYPOINTS[0];
+  const wp = _WP[0];
   const norm = getTrackNormal(0);
   const sx = wp.x - camX;
   const sy = wp.y - camY;
@@ -506,7 +522,7 @@ function drawStartLine(
   const cellSize = HALF_TRACK / (numCells / 2);
   ctx.save();
   ctx.translate(sx, sy);
-  const dir = WAYPOINTS[1];
+  const dir = _WP[1];
   ctx.rotate(Math.atan2(dir.y - wp.y, dir.x - wp.x) + Math.PI / 2);
   for (let row = 0; row < 2; row++) {
     for (let col = 0; col < numCells; col++) {
@@ -898,7 +914,7 @@ function drawMinimap(ctx: CanvasRenderingContext2D, cars: CarData[]) {
   // Draw track outline on minimap
   ctx.beginPath();
   for (let i = 0; i <= N; i++) {
-    const wp = WAYPOINTS[i % N];
+    const wp = _WP[i % N];
     const px = mx + (wp.x - worldMinX) * scaleX;
     const py = my + (wp.y - worldMinY) * scaleY;
     if (i === 0) ctx.moveTo(px, py);
@@ -911,7 +927,7 @@ function drawMinimap(ctx: CanvasRenderingContext2D, cars: CarData[]) {
   ctx.stroke();
 
   // Draw start line on minimap
-  const wp0 = WAYPOINTS[0];
+  const wp0 = _WP[0];
   ctx.strokeStyle = "white";
   ctx.lineWidth = 2;
   const norm = getTrackNormal(0);
@@ -952,6 +968,7 @@ function drawHUD(
   state: RaceState,
   playerSpeedPx: number,
   boostTimer: number,
+  lapFlash: number,
 ) {
   const player = state.cars[0];
   const currentLap = Math.min(player.laps + 1, TOTAL_LAPS);
@@ -961,32 +978,64 @@ function drawHUD(
   // HUD panel top-left
   const hudX = 10;
   const hudY = 10;
-  const hudW = 190;
-  const hudH = 80;
+  const hudW = 210;
+  const hudH = 96;
+  const flashPulse = lapFlash > 0 ? Math.min(1, lapFlash / 30) : 0;
 
-  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillStyle =
+    flashPulse > 0
+      ? `rgba(0,${Math.round(30 + flashPulse * 80)},0,0.85)`
+      : "rgba(0,0,0,0.78)";
   ctx.beginPath();
-  ctx.roundRect(hudX, hudY, hudW, hudH, 8);
+  ctx.roundRect(hudX, hudY, hudW, hudH, 10);
   ctx.fill();
-  ctx.strokeStyle = "rgba(0,255,128,0.35)";
-  ctx.lineWidth = 1;
+  const borderAlpha = flashPulse > 0 ? 0.9 : 0.45;
+  ctx.strokeStyle = `rgba(0,255,128,${borderAlpha})`;
+  ctx.lineWidth = flashPulse > 0 ? 2.5 : 1.5;
+  if (flashPulse > 0) {
+    ctx.shadowColor = "#00ff80";
+    ctx.shadowBlur = 16 * flashPulse;
+  }
   ctx.stroke();
-
-  // LAP
-  ctx.font = "bold 11px monospace";
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fillText("LAP", hudX + 10, hudY + 22);
-  ctx.font = "bold 22px monospace";
-  ctx.fillStyle = "#00ff80";
-  ctx.shadowColor = "#00ff80";
-  ctx.shadowBlur = 8;
-  ctx.fillText(`${currentLap} / ${TOTAL_LAPS}`, hudX + 10, hudY + 46);
   ctx.shadowBlur = 0;
+
+  // LAP label
+  ctx.font = "bold 11px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("LAP", hudX + 12, hudY + 22);
+
+  // Lap counter — bigger, with flash color
+  const lapColor =
+    flashPulse > 0
+      ? `rgba(255,${Math.round(215 + (255 - 215) * (1 - flashPulse))},0,1)`
+      : "#00ff80";
+  const lapGlow = flashPulse > 0 ? "#ffd700" : "#00ff80";
+  const lapBlur = flashPulse > 0 ? 20 * flashPulse : 8;
+  ctx.font = "bold 30px monospace";
+  ctx.fillStyle = lapColor;
+  ctx.shadowColor = lapGlow;
+  ctx.shadowBlur = lapBlur;
+  ctx.fillText(`${currentLap} / ${TOTAL_LAPS}`, hudX + 12, hudY + 58);
+  ctx.shadowBlur = 0;
+
+  // "LAP COMPLETE!" flash label
+  if (lapFlash > 60) {
+    const alpha = Math.min(1, (lapFlash - 60) / 20);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = "bold 10px monospace";
+    ctx.fillStyle = "#ffd700";
+    ctx.shadowColor = "#ffd700";
+    ctx.shadowBlur = 8;
+    ctx.fillText("LAP COMPLETE!", hudX + 12, hudY + 76);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
 
   // POSITION
   ctx.font = "bold 11px monospace";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fillText("POS", hudX + 110, hudY + 22);
+  ctx.fillText("POS", hudX + 130, hudY + 22);
   const posColors = [
     "#ffd700",
     "#c0c0c0",
@@ -995,24 +1044,24 @@ function drawHUD(
     "#ffffff",
     "#ffffff",
   ];
-  ctx.font = "bold 22px monospace";
+  ctx.font = "bold 30px monospace";
   ctx.fillStyle = posColors[playerPos - 1] || "#ffffff";
   if (playerPos <= 3) {
     ctx.shadowColor = posColors[playerPos - 1];
     ctx.shadowBlur = 10;
   }
-  ctx.fillText(`P${playerPos}`, hudX + 110, hudY + 46);
+  ctx.fillText(`P${playerPos}`, hudX + 130, hudY + 58);
   ctx.shadowBlur = 0;
 
   // SPEED
   ctx.font = "bold 11px monospace";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fillText(`${speedKmh} km/h`, hudX + 10, hudY + 68);
+  ctx.fillText(`${speedKmh} km/h`, hudX + 12, hudY + 88);
 
   // PLAYER NAME
   ctx.font = "bold 11px monospace";
   ctx.fillStyle = "rgba(0,255,128,0.7)";
-  ctx.fillText("TITOO", hudX + 110, hudY + 68);
+  ctx.fillText("TITOO", hudX + 130, hudY + 88);
 
   // ── OVERTAKE! banner ──
   if (boostTimer > 0) {
@@ -1033,6 +1082,27 @@ function drawHUD(
     ctx.fillStyle = "#fffacd";
     ctx.fillText("OVERTAKE!", CANVAS_W / 2, 120);
 
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // ── FINAL LAP banner ──
+  const isFinalLap = player.laps === TOTAL_LAPS - 1;
+  if (isFinalLap) {
+    const flashAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 200);
+    ctx.save();
+    ctx.globalAlpha = flashAlpha;
+    ctx.textAlign = "center";
+    ctx.shadowColor = "#ff2200";
+    ctx.shadowBlur = 28;
+    ctx.font = "bold 36px monospace";
+    ctx.fillStyle = "#ff4400";
+    ctx.fillText("FINAL LAP", CANVAS_W / 2, 170);
+    ctx.shadowColor = "#ffd700";
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = "#ffd700";
+    ctx.font = "bold 34px monospace";
+    ctx.fillText("FINAL LAP", CANVAS_W / 2, 170);
     ctx.shadowBlur = 0;
     ctx.restore();
   }
@@ -1061,97 +1131,202 @@ function drawCountdown(ctx: CanvasRenderingContext2D, frames: number) {
   ctx.restore();
 }
 
-// ── Draw finish results ───────────────────────────────────────────────────────
+// ── Confetti particle state ──────────────────────────────────────────────────
+const _confetti: {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  color: string;
+  size: number;
+  rot: number;
+}[] = [];
+(function initConfetti() {
+  const colors = [
+    "#ffd700",
+    "#ff6b6b",
+    "#00ff80",
+    "#4dc3ff",
+    "#ff8c00",
+    "#c0c0c0",
+  ];
+  for (let i = 0; i < 80; i++) {
+    _confetti.push({
+      x: Math.random() * CANVAS_W,
+      y: -Math.random() * CANVAS_H,
+      vx: (Math.random() - 0.5) * 2.5,
+      vy: 1.5 + Math.random() * 2.5,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      size: 4 + Math.random() * 6,
+      rot: Math.random() * Math.PI * 2,
+    });
+  }
+})();
+
+// ── Draw podium finish screen ─────────────────────────────────────────────────
 function drawFinishScreen(
   ctx: CanvasRenderingContext2D,
   state: RaceState,
   alpha: number,
 ) {
+  if (alpha <= 0) return;
   ctx.save();
   ctx.globalAlpha = alpha;
 
-  // Semi-transparent panel
-  const pw = 320;
-  const ph = 280;
-  const px = (CANVAS_W - pw) / 2;
-  const py = (CANVAS_H - ph) / 2 - 30;
+  // Dark overlay
+  ctx.fillStyle = "rgba(2,4,12,0.88)";
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-  ctx.fillStyle = "rgba(5,8,16,0.92)";
-  ctx.beginPath();
-  ctx.roundRect(px, py, pw, ph, 12);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,255,128,0.5)";
-  ctx.lineWidth = 2;
-  ctx.stroke();
+  // Animate confetti
+  for (const p of _confetti) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.rot += 0.08;
+    if (p.y > CANVAS_H + 20) {
+      p.y = -20;
+      p.x = Math.random() * CANVAS_W;
+    }
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+    ctx.restore();
+  }
 
-  // Title
+  // Title: PODIUM
   ctx.textAlign = "center";
-  ctx.font = "bold 28px monospace";
-  ctx.fillStyle = "#00ff80";
-  ctx.shadowColor = "#00ff80";
-  ctx.shadowBlur = 16;
-  ctx.fillText("RACE FINISHED", CANVAS_W / 2, py + 40);
+  ctx.font = "bold 36px monospace";
+  ctx.fillStyle = "#ffd700";
+  ctx.shadowColor = "#ffd700";
+  ctx.shadowBlur = 24;
+  ctx.fillText("🏆 PODIUM", CANVAS_W / 2, 60);
   ctx.shadowBlur = 0;
 
-  // Results header
-  ctx.font = "bold 12px monospace";
-  ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText("FINAL CLASSIFICATION", CANVAS_W / 2, py + 65);
+  // Animation progress
+  const progress = Math.min(1, (120 - state.finishTimer) / 80);
+  const ease = 1 - (1 - progress) ** 3; // easeOut cubic
 
-  // Positions
-  const posColors = [
-    "#ffd700",
-    "#c0c0c0",
-    "#cd7f32",
-    "rgba(255,255,255,0.8)",
-    "rgba(255,255,255,0.6)",
-    "rgba(255,255,255,0.6)",
+  // Podium data: [pos_in_sortedIdx, label, color, height, xCenter]
+  // P1 center, P2 left, P3 right
+  const podiumSlots = [
+    {
+      sortPos: 1,
+      label: "P2",
+      color: "#c0c0c0",
+      height: 90,
+      cx: CANVAS_W / 2 - 110,
+    },
+    {
+      sortPos: 0,
+      label: "P1",
+      color: "#ffd700",
+      height: 120,
+      cx: CANVAS_W / 2,
+    },
+    {
+      sortPos: 2,
+      label: "P3",
+      color: "#cd7f32",
+      height: 70,
+      cx: CANVAS_W / 2 + 110,
+    },
   ];
 
-  state.sortedIdx.slice(0, 6).forEach((carIdx, pos) => {
-    const car = state.cars[carIdx];
-    const rowY = py + 90 + pos * 30;
-    const pts = F1_POINTS[pos];
+  const baseY = CANVAS_H - 60;
+  const platformW = 88;
 
-    // Position number
-    ctx.textAlign = "left";
-    ctx.font = "bold 14px monospace";
-    ctx.fillStyle = posColors[pos];
-    if (pos < 3) {
-      ctx.shadowColor = posColors[pos];
+  for (const slot of podiumSlots) {
+    const carIdx = state.sortedIdx[slot.sortPos];
+    if (carIdx === undefined) continue;
+    const car = state.cars[carIdx];
+    const isPlayer = car.isPlayer;
+
+    const platformH = slot.height * ease;
+    const platformY = baseY - platformH;
+
+    // Platform glow for player
+    if (isPlayer) {
+      ctx.shadowColor = "#00ff80";
+      ctx.shadowBlur = 20;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+
+    // Platform body
+    const grad = ctx.createLinearGradient(
+      slot.cx - platformW / 2,
+      platformY,
+      slot.cx + platformW / 2,
+      baseY,
+    );
+    grad.addColorStop(0, `${slot.color}cc`);
+    grad.addColorStop(1, `${slot.color}44`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(slot.cx - platformW / 2, platformY, platformW, platformH);
+
+    // Platform border
+    ctx.strokeStyle = slot.color;
+    ctx.lineWidth = isPlayer ? 2.5 : 1.5;
+    ctx.strokeRect(slot.cx - platformW / 2, platformY, platformW, platformH);
+    ctx.shadowBlur = 0;
+
+    if (ease < 0.3) continue;
+
+    const nameY = platformY - 10;
+
+    // Position label
+    ctx.textAlign = "center";
+    ctx.font = "bold 22px monospace";
+    ctx.fillStyle = slot.color;
+    ctx.shadowColor = slot.color;
+    ctx.shadowBlur = 12;
+    ctx.fillText(slot.label, slot.cx, nameY - 50);
+    ctx.shadowBlur = 0;
+
+    // Mini car indicator (colored circle with glow)
+    ctx.beginPath();
+    ctx.arc(slot.cx, nameY - 28, 12, 0, Math.PI * 2);
+    ctx.fillStyle = car.color;
+    ctx.shadowColor = car.glowColor;
+    ctx.shadowBlur = 16;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Driver name
+    ctx.font = isPlayer ? "bold 13px monospace" : "12px monospace";
+    ctx.fillStyle = isPlayer ? "#00ff80" : "rgba(255,255,255,0.9)";
+    if (isPlayer) {
+      ctx.shadowColor = "#00ff80";
       ctx.shadowBlur = 8;
     }
-    ctx.fillText(`P${pos + 1}`, px + 20, rowY);
+    ctx.fillText(car.name, slot.cx, nameY - 6);
     ctx.shadowBlur = 0;
 
-    // Car name
-    ctx.font = car.isPlayer ? "bold 14px monospace" : "14px monospace";
-    ctx.fillStyle = car.isPlayer ? "#00ff80" : "rgba(255,255,255,0.85)";
-    if (car.isPlayer) {
-      ctx.shadowColor = "#00ff80";
-      ctx.shadowBlur = 6;
-    }
-    ctx.fillText(car.name, px + 60, rowY);
-    ctx.shadowBlur = 0;
+    // Points inside platform
+    const pts = F1_POINTS[slot.sortPos] || 0;
+    ctx.font = "bold 11px monospace";
+    ctx.fillStyle = slot.color;
+    ctx.fillText(`${pts}pts`, slot.cx, platformY + Math.min(22, platformH - 6));
+  }
 
-    // Points
-    ctx.textAlign = "right";
-    ctx.font = "bold 14px monospace";
-    ctx.fillStyle = posColors[pos];
-    ctx.fillText(`${pts} pts`, px + pw - 20, rowY);
-  });
-
-  // Player result highlight
-  const playerPosIdx = state.sortedIdx.findIndex((i) => i === 0);
-  const finalPts = F1_POINTS[playerPosIdx] || 0;
-  ctx.textAlign = "center";
-  ctx.font = "bold 14px monospace";
-  ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText(
-    `YOUR SCORE: ${finalPts} championship pts`,
-    CANVAS_W / 2,
-    py + ph - 20,
-  );
+  // Bottom note
+  if (ease > 0.7) {
+    const playerSortPos = state.sortedIdx.findIndex((i) => i === 0);
+    const finalPts = F1_POINTS[playerSortPos] || 0;
+    ctx.globalAlpha = alpha * Math.min(1, (ease - 0.7) / 0.3);
+    ctx.textAlign = "center";
+    ctx.font = "bold 12px monospace";
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillText(
+      `YOUR POINTS: ${finalPts} championship pts`,
+      CANVAS_W / 2,
+      CANVAS_H - 22,
+    );
+  }
 
   ctx.restore();
 }
@@ -1557,19 +1732,28 @@ interface Props {
   onStateChange: (state: "idle" | "playing" | "gameover") => void;
   onScoreChange: (score: number, speedLevel: number, lives: number) => void;
   autoStart?: boolean;
+  stage?: number;
 }
 
 export default function F1Game({
   onStateChange,
   onScoreChange,
   autoStart,
+  stage = 1,
 }: Props) {
+  // Update module-level waypoints based on stage
+  _WP = stage === 2 ? WAYPOINTS_STAGE2 : WAYPOINTS;
+  N = _WP.length;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<RaceState>(createInitialState());
   const keysRef = useRef<Set<string>>(new Set());
+  const steerIntensityRef = useRef<number>(1.0);
+  const accelIntensityRef = useRef<number>(1.0);
   const rafRef = useRef<number>(0);
   const goTimerRef = useRef<number>(0); // frames to show GO!
   const finishCountRef = useRef({ val: 0 });
+  const lapFlashRef = useRef<number>(0); // frames since last lap completed (for flash animation)
+  const prevLapsRef = useRef<number>(0); // previous player lap count to detect increments
 
   // Background music
   const { startMusic, stopMusic, toggleMute, isMuted, updateTyreScreech } =
@@ -1578,6 +1762,7 @@ export default function F1Game({
   // Boost effect refs
   const boostTimerRef = useRef<number>(0);
   const prevSortedIdxRef = useRef<number[]>([0, 1, 2, 3, 4, 5]);
+  const hasAutoStartedRef = useRef(false);
 
   // Steering wheel 2D rotation state
   const [wheelRotation, setWheelRotation] = useState<WheelRotation>({
@@ -1603,7 +1788,8 @@ export default function F1Game({
   }, [onStateChange, startMusic]);
 
   useEffect(() => {
-    if (autoStart) {
+    if (autoStart && !hasAutoStartedRef.current) {
+      hasAutoStartedRef.current = true;
       startCountdown();
     }
   }, [autoStart, startCountdown]);
@@ -1689,54 +1875,60 @@ export default function F1Game({
 
       const deltaX = e.clientX - drag.startX;
       const deltaY = e.clientY - drag.startY;
-      const DEAD_ZONE = 8;
-      const MAX_DRAG = 60;
+      const DEAD_ZONE = 4; // reduced for snappier response
+      const MAX_DRAG = 50; // reduced travel distance for quicker full-intensity
 
       // ── Horizontal axis: left / right steering ──
       if (deltaX < -DEAD_ZONE) {
-        const intensity = Math.min(Math.abs(deltaX), MAX_DRAG) / MAX_DRAG;
+        const raw = Math.min(Math.abs(deltaX) - DEAD_ZONE, MAX_DRAG);
+        const intensity = Math.min(0.3 + (raw / MAX_DRAG) * 0.7, 1.0); // 0.3 minimum to feel responsive
+        steerIntensityRef.current = intensity;
         keysRef.current.add("ArrowLeft");
         keysRef.current.delete("ArrowRight");
         setWheelRotation((prev) => ({
           ...prev,
-          z: -Math.round(intensity * 30),
+          z: -Math.round(intensity * 35),
         }));
       } else if (deltaX > DEAD_ZONE) {
-        const intensity = Math.min(deltaX, MAX_DRAG) / MAX_DRAG;
+        const raw = Math.min(deltaX - DEAD_ZONE, MAX_DRAG);
+        const intensity = Math.min(0.3 + (raw / MAX_DRAG) * 0.7, 1.0);
+        steerIntensityRef.current = intensity;
         keysRef.current.add("ArrowRight");
         keysRef.current.delete("ArrowLeft");
         setWheelRotation((prev) => ({
           ...prev,
-          z: Math.round(intensity * 30),
+          z: Math.round(intensity * 35),
         }));
       } else {
+        steerIntensityRef.current = 1.0;
         keysRef.current.delete("ArrowLeft");
         keysRef.current.delete("ArrowRight");
         setWheelRotation((prev) => ({ ...prev, z: 0 }));
       }
 
       // ── Vertical axis: up = accelerate, down = brake ──
-      // Drag UP (negative deltaY) = accelerate
       if (deltaY < -DEAD_ZONE) {
-        const intensity = Math.min(Math.abs(deltaY), MAX_DRAG) / MAX_DRAG;
+        const raw = Math.min(Math.abs(deltaY) - DEAD_ZONE, MAX_DRAG);
+        const intensity = Math.min(0.4 + (raw / MAX_DRAG) * 0.6, 1.0);
+        accelIntensityRef.current = intensity;
         keysRef.current.add("ArrowUp");
         keysRef.current.delete("ArrowDown");
-        // rotateX negative = tilt top of wheel toward viewer (lean forward)
         setWheelRotation((prev) => ({
           ...prev,
           x: -Math.round(intensity * 25),
         }));
       } else if (deltaY > DEAD_ZONE) {
-        // Drag DOWN = brake
-        const intensity = Math.min(deltaY, MAX_DRAG) / MAX_DRAG;
+        const raw = Math.min(deltaY - DEAD_ZONE, MAX_DRAG);
+        const intensity = Math.min(0.4 + (raw / MAX_DRAG) * 0.6, 1.0);
+        accelIntensityRef.current = intensity;
         keysRef.current.add("ArrowDown");
         keysRef.current.delete("ArrowUp");
-        // rotateX positive = tilt top of wheel away from viewer (lean back)
         setWheelRotation((prev) => ({
           ...prev,
           x: Math.round(intensity * 25),
         }));
       } else {
+        accelIntensityRef.current = 1.0;
         keysRef.current.delete("ArrowUp");
         keysRef.current.delete("ArrowDown");
         setWheelRotation((prev) => ({ ...prev, x: 0 }));
@@ -1749,6 +1941,8 @@ export default function F1Game({
     (_e: React.PointerEvent<HTMLDivElement>) => {
       wheelDragRef.current = null;
       setWheelRotation({ z: 0, x: 0 });
+      steerIntensityRef.current = 1.0;
+      accelIntensityRef.current = 1.0;
       keysRef.current.delete("ArrowLeft");
       keysRef.current.delete("ArrowRight");
       keysRef.current.delete("ArrowUp");
@@ -1782,7 +1976,13 @@ export default function F1Game({
           updateAI(s.cars[i], finishCountRef.current);
         }
         // Update player
-        updatePlayer(player, keysRef.current, finishCountRef.current);
+        updatePlayer(
+          player,
+          keysRef.current,
+          finishCountRef.current,
+          steerIntensityRef.current,
+          accelIntensityRef.current,
+        );
 
         // Tyre screech: triggered by steering/braking at speed
         {
@@ -1810,6 +2010,13 @@ export default function F1Game({
         const ptsForPos = F1_POINTS[playerPos - 1] || 0;
         s.playerPos = playerPos;
         s.currentLap = currentLap;
+
+        // ── Detect lap increment ──
+        if (player.laps > prevLapsRef.current) {
+          lapFlashRef.current = 90; // flash for 1.5 seconds
+          prevLapsRef.current = player.laps;
+        }
+        if (lapFlashRef.current > 0) lapFlashRef.current--;
 
         // ── Detect overtake (player position index improved) ──
         const prevPlayerSortedPos = prevSortedIdxRef.current.findIndex(
@@ -1870,13 +2077,19 @@ export default function F1Game({
       // HUD (fixed position, reset transforms)
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       if (s.phase === "racing" || s.phase === "finished") {
-        drawHUD(ctx, s, player.speed, boostTimerRef.current);
+        drawHUD(
+          ctx,
+          s,
+          player.speed,
+          boostTimerRef.current,
+          lapFlashRef.current,
+        );
         drawMinimap(ctx, s.cars);
         drawRearView(ctx, s.cars, player);
       }
 
       if (s.phase === "countdown") {
-        drawHUD(ctx, s, 0, 0);
+        drawHUD(ctx, s, 0, 0, 0);
         drawMinimap(ctx, s.cars);
         drawRearView(ctx, s.cars, player);
         drawCountdown(ctx, s.countdown);

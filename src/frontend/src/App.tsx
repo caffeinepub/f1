@@ -216,10 +216,12 @@ function RaceHUD({
   score,
   speedLevel,
   lives,
+  stage = 1,
 }: {
   score: number;
   speedLevel: number;
   lives: number;
+  stage?: number;
 }) {
   const posColors = [
     "#ffd700",
@@ -267,6 +269,19 @@ function RaceHUD({
           P{lives}
         </span>
       </div>
+      <div
+        className="px-2 py-0.5 rounded text-[10px] font-black tracking-widest"
+        style={{
+          background:
+            stage === 2
+              ? "oklch(0.65 0.18 55 / 0.3)"
+              : "oklch(0.82 0.22 138 / 0.15)",
+          border: `1px solid ${stage === 2 ? "oklch(0.65 0.18 55 / 0.6)" : "oklch(0.82 0.22 138 / 0.4)"}`,
+          color: stage === 2 ? "oklch(0.82 0.18 55)" : "var(--neon-green)",
+        }}
+      >
+        S{stage}
+      </div>
     </div>
   );
 }
@@ -279,6 +294,7 @@ export default function App() {
   const [playerName, setPlayerName] = useState("TITOO");
   const [scoreSubmitted, setScoreSubmitted] = useState(false);
   const [gameKey, setGameKey] = useState(0);
+  const [stage, setStage] = useState(1);
 
   const { actor, isFetching } = useActor();
   const { identity, login, clear, isInitializing } = useInternetIdentity();
@@ -388,12 +404,18 @@ export default function App() {
       {/* ── PLAYING SCREEN ── */}
       {screen === "playing" && (
         <div className="flex flex-col items-center justify-center min-h-dvh py-2">
-          <RaceHUD score={score} lives={lives} speedLevel={speedLevel} />
+          <RaceHUD
+            score={score}
+            lives={lives}
+            speedLevel={speedLevel}
+            stage={stage}
+          />
           <F1Game
             key={gameKey}
             onStateChange={handleGameStateChange}
             onScoreChange={handleScoreChange}
             autoStart
+            stage={stage}
           />
         </div>
       )}
@@ -517,13 +539,34 @@ export default function App() {
 
                   <Button
                     data-ocid="game.playagain_button"
-                    onClick={handleStartPlaying}
+                    onClick={() => {
+                      setStage(1);
+                      handleStartPlaying();
+                    }}
                     variant="outline"
                     className="w-full mt-3 neon-btn border-neon-green/40 text-neon-green hover:bg-neon-green/10 font-bold"
                   >
                     <RotateCcw className="w-4 h-4 mr-2" />
                     Race Again
                   </Button>
+                  {stage === 1 && (
+                    <Button
+                      data-ocid="game.nextstage_button"
+                      onClick={() => {
+                        setStage(2);
+                        handleStartPlaying();
+                      }}
+                      className="w-full mt-1 font-bold"
+                      style={{
+                        background:
+                          "linear-gradient(135deg, oklch(0.65 0.18 55), oklch(0.72 0.2 75))",
+                        color: "oklch(0.08 0.005 260)",
+                      }}
+                    >
+                      <Trophy className="w-4 h-4 mr-2" />
+                      Next Stage →
+                    </Button>
+                  )}
                 </motion.div>
               )}
 
@@ -548,7 +591,9 @@ export default function App() {
                     START RACE
                   </Button>
                   <p className="text-center text-xs text-muted-foreground mt-2">
-                    3 laps · 5 AI opponents · Arrow keys / WASD
+                    {stage === 2
+                      ? "Stage 2 · Complex Track"
+                      : "3 laps · 5 AI opponents · Arrow keys / WASD"}
                   </p>
                 </motion.div>
               )}
