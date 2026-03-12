@@ -650,17 +650,24 @@ function drawBackground(ctx: CanvasRenderingContext2D) {
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 }
 
+// ── Wheel rotation state ─────────────────────────────────────────────────────
+interface WheelRotation {
+  z: number; // left/right tilt (rotateZ)
+  x: number; // up/down tilt (rotateX) — positive = tilt back (brake), negative = tilt forward (accel)
+}
+
 // ── F1 Steering Wheel SVG component ──────────────────────────────────────────
-function SteeringWheelSVG({ rotation }: { rotation: number }) {
+function SteeringWheelSVG({ rotation }: { rotation: WheelRotation }) {
   return (
     <svg
       width="120"
       height="110"
       viewBox="0 0 120 110"
       style={{
-        transform: `rotate(${rotation}deg)`,
+        transform: `perspective(300px) rotateZ(${rotation.z}deg) rotateX(${rotation.x}deg)`,
         transition: "transform 0.05s ease-out",
         filter: "drop-shadow(0 0 8px rgba(0,255,128,0.6))",
+        transformStyle: "preserve-3d",
       }}
       aria-hidden="true"
     >
@@ -754,6 +761,23 @@ function SteeringWheelSVG({ rotation }: { rotation: number }) {
   );
 }
 
+// ── Derive direction hint label from wheel rotation ──────────────────────────
+function getDirectionHint(rotation: WheelRotation): string {
+  const absZ = Math.abs(rotation.z);
+  const absX = Math.abs(rotation.x);
+  const THRESHOLD = 5;
+
+  // Dominant axis determines label
+  if (absX > absZ && absX > THRESHOLD) {
+    // X-axis dominant: up/down
+    return rotation.x < 0 ? "▲ GO" : "▼ BRAKE";
+  }
+  if (absZ > THRESHOLD) {
+    return rotation.z < 0 ? "◀ LEFT" : "RIGHT ▶";
+  }
+  return "STEER";
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 interface Props {
   onStateChange: (state: "idle" | "playing" | "gameover") => void;
@@ -773,11 +797,17 @@ export default function F1Game({
   const goTimerRef = useRef<number>(0); // frames to show GO!
   const finishCountRef = useRef({ val: 0 });
 
-  // Steering wheel state
-  const [wheelRotation, setWheelRotation] = useState(0);
+  // Steering wheel 2D rotation state
+  const [wheelRotation, setWheelRotation] = useState<WheelRotation>({
+    z: 0,
+    x: 0,
+  });
+
+  // Track both startX and startY for 2D joystick drag
   const wheelDragRef = useRef<{
     active: boolean;
     startX: number;
+    startY: number;
     pointerId: number;
   } | null>(null);
 
@@ -852,13 +882,14 @@ export default function F1Game({
     };
   }, []);
 
-  // ── Steering wheel pointer handlers ─────────────────────────────────────────
+  // ── Steering wheel pointer handlers (full 2D joystick) ───────────────────────
   const handleWheelPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId);
       wheelDragRef.current = {
         active: true,
         startX: e.clientX,
+        startY: e.clientY,
         pointerId: e.pointerId,
       };
       if (stateRef.current.phase === "idle") {
@@ -874,25 +905,58 @@ export default function F1Game({
       if (!drag?.active || e.pointerId !== drag.pointerId) return;
 
       const deltaX = e.clientX - drag.startX;
+      const deltaY = e.clientY - drag.startY;
       const DEAD_ZONE = 8;
       const MAX_DRAG = 60;
 
+      // ── Horizontal axis: left / right steering ──
       if (deltaX < -DEAD_ZONE) {
         const intensity = Math.min(Math.abs(deltaX), MAX_DRAG) / MAX_DRAG;
-        const rot = -Math.round(intensity * 30);
-        setWheelRotation(rot);
         keysRef.current.add("ArrowLeft");
         keysRef.current.delete("ArrowRight");
+        setWheelRotation((prev) => ({
+          ...prev,
+          z: -Math.round(intensity * 30),
+        }));
       } else if (deltaX > DEAD_ZONE) {
         const intensity = Math.min(deltaX, MAX_DRAG) / MAX_DRAG;
-        const rot = Math.round(intensity * 30);
-        setWheelRotation(rot);
         keysRef.current.add("ArrowRight");
         keysRef.current.delete("ArrowLeft");
+        setWheelRotation((prev) => ({
+          ...prev,
+          z: Math.round(intensity * 30),
+        }));
       } else {
-        setWheelRotation(0);
         keysRef.current.delete("ArrowLeft");
         keysRef.current.delete("ArrowRight");
+        setWheelRotation((prev) => ({ ...prev, z: 0 }));
+      }
+
+      // ── Vertical axis: up = accelerate, down = brake ──
+      // Drag UP (negative deltaY) = accelerate
+      if (deltaY < -DEAD_ZONE) {
+        const intensity = Math.min(Math.abs(deltaY), MAX_DRAG) / MAX_DRAG;
+        keysRef.current.add("ArrowUp");
+        keysRef.current.delete("ArrowDown");
+        // rotateX negative = tilt top of wheel toward viewer (lean forward)
+        setWheelRotation((prev) => ({
+          ...prev,
+          x: -Math.round(intensity * 25),
+        }));
+      } else if (deltaY > DEAD_ZONE) {
+        // Drag DOWN = brake
+        const intensity = Math.min(deltaY, MAX_DRAG) / MAX_DRAG;
+        keysRef.current.add("ArrowDown");
+        keysRef.current.delete("ArrowUp");
+        // rotateX positive = tilt top of wheel away from viewer (lean back)
+        setWheelRotation((prev) => ({
+          ...prev,
+          x: Math.round(intensity * 25),
+        }));
+      } else {
+        keysRef.current.delete("ArrowUp");
+        keysRef.current.delete("ArrowDown");
+        setWheelRotation((prev) => ({ ...prev, x: 0 }));
       }
     },
     [],
@@ -901,38 +965,14 @@ export default function F1Game({
   const handleWheelPointerUp = useCallback(
     (_e: React.PointerEvent<HTMLDivElement>) => {
       wheelDragRef.current = null;
-      setWheelRotation(0);
+      setWheelRotation({ z: 0, x: 0 });
       keysRef.current.delete("ArrowLeft");
       keysRef.current.delete("ArrowRight");
+      keysRef.current.delete("ArrowUp");
+      keysRef.current.delete("ArrowDown");
     },
     [],
   );
-
-  // ── Accelerate / Brake button handlers ──────────────────────────────────────
-  const handleAccelDown = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      keysRef.current.add("ArrowUp");
-      if (stateRef.current.phase === "idle") startCountdown();
-    },
-    [startCountdown],
-  );
-
-  const handleAccelUp = useCallback(() => {
-    keysRef.current.delete("ArrowUp");
-  }, []);
-
-  const handleBrakeDown = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>) => {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      keysRef.current.add("ArrowDown");
-    },
-    [],
-  );
-
-  const handleBrakeUp = useCallback(() => {
-    keysRef.current.delete("ArrowDown");
-  }, []);
 
   // Game loop
   useEffect(() => {
@@ -1044,6 +1084,18 @@ export default function F1Game({
     return () => cancelAnimationFrame(rafRef.current);
   }, [onStateChange, onScoreChange]);
 
+  const directionHint = getDirectionHint(wheelRotation);
+
+  // Tint the wheel plate based on current action
+  const getWheelGlowColor = () => {
+    if (Math.abs(wheelRotation.x) > 5) {
+      return wheelRotation.x < 0
+        ? "rgba(0,255,128,0.4)" // accelerating — green
+        : "rgba(255,60,60,0.4)"; // braking — red
+    }
+    return "rgba(0,255,128,0.2)";
+  };
+
   return (
     <div className="relative" data-ocid="game.canvas_target">
       <canvas
@@ -1061,157 +1113,147 @@ export default function F1Game({
 
       {/* ── F1 Steering Controller Overlay ── */}
       <div
-        className="absolute bottom-0 left-0 right-0 flex items-end justify-between"
+        className="absolute bottom-0 left-0 right-0 flex items-end justify-center"
         style={{
           padding: "12px 16px 16px",
           pointerEvents: "none",
           userSelect: "none",
         }}
       >
-        {/* Steering Wheel (left side) */}
+        {/* Steering Wheel — full 2D joystick (center) */}
         <div
-          role="slider"
-          aria-label="Steering wheel"
-          aria-valuenow={wheelRotation}
-          aria-valuemin={-30}
-          aria-valuemax={30}
-          tabIndex={0}
-          data-ocid="game.canvas_target"
           style={{
             pointerEvents: "auto",
-            cursor: "grab",
-            touchAction: "none",
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
-            gap: 4,
+            gap: 6,
             userSelect: "none",
             WebkitUserSelect: "none",
           }}
-          onPointerDown={handleWheelPointerDown}
-          onPointerMove={handleWheelPointerMove}
-          onPointerUp={handleWheelPointerUp}
-          onPointerCancel={handleWheelPointerUp}
         >
-          {/* Wheel background plate */}
+          {/* Direction arrows hint above wheel */}
           <div
             style={{
-              background: "rgba(0,10,5,0.78)",
-              border: "1.5px solid rgba(0,255,128,0.35)",
-              borderRadius: "50%",
-              padding: 8,
-              backdropFilter: "blur(6px)",
-              boxShadow:
-                "0 0 20px rgba(0,255,128,0.2), inset 0 0 12px rgba(0,0,0,0.5)",
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr 1fr",
+              gridTemplateRows: "1fr 1fr",
+              width: 72,
+              gap: 2,
+              textAlign: "center",
+              fontFamily: "monospace",
+              fontSize: 11,
+              fontWeight: 700,
+              userSelect: "none",
             }}
           >
-            <SteeringWheelSVG rotation={wheelRotation} />
+            <span
+              style={{
+                gridColumn: 2,
+                color: wheelRotation.x < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                textShadow: wheelRotation.x < -5 ? "0 0 8px #00ff80" : "none",
+              }}
+            >
+              ▲
+            </span>
+            <span
+              style={{
+                gridColumn: 1,
+                gridRow: 2,
+                color: wheelRotation.z < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                textShadow: wheelRotation.z < -5 ? "0 0 8px #00ff80" : "none",
+              }}
+            >
+              ◀
+            </span>
+            <span
+              style={{
+                gridColumn: 2,
+                gridRow: 2,
+                color: wheelRotation.x > 5 ? "#ff4444" : "rgba(0,255,128,0.3)",
+                textShadow: wheelRotation.x > 5 ? "0 0 8px #ff4444" : "none",
+              }}
+            >
+              ▼
+            </span>
+            <span
+              style={{
+                gridColumn: 3,
+                gridRow: 2,
+                color: wheelRotation.z > 5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                textShadow: wheelRotation.z > 5 ? "0 0 8px #00ff80" : "none",
+              }}
+            >
+              ▶
+            </span>
           </div>
-          {/* Direction hint */}
+
+          {/* Wheel drag zone */}
+          <div
+            role="slider"
+            aria-label="Steering wheel — drag in any direction to control"
+            aria-valuenow={wheelRotation.z}
+            aria-valuemin={-30}
+            aria-valuemax={30}
+            tabIndex={0}
+            data-ocid="game.canvas_target"
+            style={{
+              cursor: "grab",
+              touchAction: "none",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 0,
+              userSelect: "none",
+              WebkitUserSelect: "none",
+            }}
+            onPointerDown={handleWheelPointerDown}
+            onPointerMove={handleWheelPointerMove}
+            onPointerUp={handleWheelPointerUp}
+            onPointerCancel={handleWheelPointerUp}
+          >
+            {/* Wheel background plate */}
+            <div
+              style={{
+                background: "rgba(0,10,5,0.78)",
+                border: `1.5px solid rgba(0,255,128,${Math.abs(wheelRotation.z) > 5 || Math.abs(wheelRotation.x) > 5 ? "0.75" : "0.35"})`,
+                borderRadius: "50%",
+                padding: 8,
+                backdropFilter: "blur(6px)",
+                boxShadow: `0 0 20px ${getWheelGlowColor()}, inset 0 0 12px rgba(0,0,0,0.5)`,
+                transition: "box-shadow 0.1s ease, border-color 0.1s ease",
+              }}
+            >
+              <SteeringWheelSVG rotation={wheelRotation} />
+            </div>
+          </div>
+
+          {/* Direction label below wheel */}
           <div
             style={{
               fontSize: 10,
               fontFamily: "monospace",
-              color: "rgba(0,255,128,0.6)",
-              letterSpacing: 1,
+              color:
+                directionHint === "▼ BRAKE"
+                  ? "rgba(255,100,100,0.85)"
+                  : directionHint === "STEER"
+                    ? "rgba(0,255,128,0.4)"
+                    : "rgba(0,255,128,0.85)",
+              letterSpacing: 1.5,
               textTransform: "uppercase",
+              textShadow:
+                directionHint !== "STEER"
+                  ? directionHint === "▼ BRAKE"
+                    ? "0 0 6px rgba(255,60,60,0.6)"
+                    : "0 0 6px rgba(0,255,128,0.5)"
+                  : "none",
+              transition: "color 0.1s, text-shadow 0.1s",
+              minWidth: 72,
+              textAlign: "center",
             }}
           >
-            {wheelRotation < -5
-              ? "◀ LEFT"
-              : wheelRotation > 5
-                ? "RIGHT ▶"
-                : "STEER"}
+            {directionHint}
           </div>
-        </div>
-
-        {/* Right side: Accelerate + Brake buttons */}
-        <div
-          style={{
-            pointerEvents: "none",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          {/* Accelerate button */}
-          <button
-            type="button"
-            aria-label="Accelerate"
-            data-ocid="game.primary_button"
-            style={{
-              pointerEvents: "auto",
-              touchAction: "none",
-              width: 80,
-              height: 80,
-              borderRadius: "50%",
-              background:
-                "radial-gradient(circle at 35% 35%, rgba(0,255,128,0.35), rgba(0,80,40,0.8))",
-              border: "2.5px solid #00ff80",
-              boxShadow:
-                "0 0 20px rgba(0,255,128,0.5), 0 0 40px rgba(0,255,128,0.2), inset 0 0 16px rgba(0,255,128,0.1)",
-              color: "#00ff80",
-              fontSize: 13,
-              fontWeight: 700,
-              fontFamily: "monospace",
-              letterSpacing: 1,
-              cursor: "pointer",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 2,
-              userSelect: "none",
-              WebkitUserSelect: "none",
-            }}
-            onPointerDown={handleAccelDown}
-            onPointerUp={handleAccelUp}
-            onPointerCancel={handleAccelUp}
-            onPointerLeave={handleAccelUp}
-          >
-            <span style={{ fontSize: 22, lineHeight: 1 }}>▲</span>
-            <span>GO</span>
-          </button>
-
-          {/* Brake button */}
-          <button
-            type="button"
-            aria-label="Brake"
-            data-ocid="game.secondary_button"
-            style={{
-              pointerEvents: "auto",
-              touchAction: "none",
-              width: 56,
-              height: 56,
-              borderRadius: "50%",
-              background:
-                "radial-gradient(circle at 35% 35%, rgba(255,60,60,0.35), rgba(100,0,0,0.8))",
-              border: "2px solid #ff3c3c",
-              boxShadow:
-                "0 0 14px rgba(255,60,60,0.45), 0 0 28px rgba(255,60,60,0.15), inset 0 0 10px rgba(255,60,60,0.1)",
-              color: "#ff6060",
-              fontSize: 11,
-              fontWeight: 700,
-              fontFamily: "monospace",
-              letterSpacing: 1,
-              cursor: "pointer",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 2,
-              userSelect: "none",
-              WebkitUserSelect: "none",
-            }}
-            onPointerDown={handleBrakeDown}
-            onPointerUp={handleBrakeUp}
-            onPointerCancel={handleBrakeUp}
-            onPointerLeave={handleBrakeUp}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>▼</span>
-            <span>BRAKE</span>
-          </button>
         </div>
       </div>
     </div>
