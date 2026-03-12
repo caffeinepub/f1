@@ -1,336 +1,74 @@
-import { useCallback, useRef } from "react";
-
-export type GameState = "idle" | "playing" | "gameover";
-
-export interface Car {
+// Types and constants for the F1 circuit racing game
+export interface Point {
   x: number;
   y: number;
-  width: number;
-  height: number;
-  color: string;
-  roofColor: string;
-  lane: number;
-  speed?: number;
 }
 
-export interface DashLine {
+export interface CarData {
+  x: number;
   y: number;
-  lane: number;
+  heading: number;
+  speed: number;
+  maxSpeed: number;
+  laps: number;
+  targetWP: number;
+  lapReady: boolean;
+  color: string;
+  glowColor: string;
+  name: string;
+  isPlayer: boolean;
+  finished: boolean;
+  finishPos: number;
 }
 
-export interface GameData {
-  state: GameState;
-  score: number;
-  lives: number;
-  speedLevel: number;
-  playerCar: Car;
-  obstacles: Car[];
-  dashLines: DashLine[];
-  roadScrollY: number;
-  invincible: boolean;
-  invincibleTimer: number;
-  spawnTimer: number;
-  scoreFloat: number;
+export type GamePhase = "idle" | "countdown" | "racing" | "finished";
+
+export interface RaceState {
+  phase: GamePhase;
+  cars: CarData[];
+  countdown: number;
+  finishTimer: number;
+  sortedIdx: number[];
+  playerPos: number;
+  currentLap: number;
+  finalPoints: number;
 }
 
-export const CANVAS_WIDTH = 360;
-export const CANVAS_HEIGHT = 600;
-export const LANE_COUNT = 3;
-const CAR_WIDTH = 50;
-const CAR_HEIGHT = 90;
-const OBSTACLE_WIDTH = 48;
-const OBSTACLE_HEIGHT = 84;
-const PLAYER_Y_OFFSET = 100; // from bottom
-const BASE_SPEED = 4;
-const SPEED_INCREMENT = 1.2; // noticeable speed boost per km
-const SPEED_UP_INTERVAL = 10; // every 100 metres
-const SPAWN_BASE_INTERVAL = 90; // frames
-const INVINCIBILITY_FRAMES = 120;
-const DASH_LINE_COUNT = 8;
+export const TOTAL_LAPS = 3;
+export const TRACK_WIDTH = 140;
+export const CANVAS_W = 480;
+export const CANVAS_H = 640;
+export const F1_POINTS = [25, 18, 15, 12, 10, 8];
 
-// F1-inspired livery colors: body + wing/cockpit surround accent
-const OBSTACLE_COLORS = [
-  { body: "#e8002d", roof: "#a00020" }, // Ferrari red
-  { body: "#0067ff", roof: "#003faa" }, // Williams/Alpine blue
-  { body: "#ff8700", roof: "#b85e00" }, // McLaren papaya
-  { body: "#ffffff", roof: "#aaaaaa" }, // Haas white
-  { body: "#006f62", roof: "#004a42" }, // Aston Martin green
-  { body: "#1e1e1e", roof: "#444444" }, // AlphaTauri dark
+export const WAYPOINTS: Point[] = [
+  { x: 800, y: 100 },
+  { x: 1050, y: 100 },
+  { x: 1280, y: 140 },
+  { x: 1430, y: 280 },
+  { x: 1480, y: 460 },
+  { x: 1460, y: 640 },
+  { x: 1380, y: 800 },
+  { x: 1200, y: 900 },
+  { x: 1000, y: 950 },
+  { x: 850, y: 940 },
+  { x: 760, y: 890 },
+  { x: 700, y: 970 },
+  { x: 580, y: 1010 },
+  { x: 400, y: 1020 },
+  { x: 220, y: 980 },
+  { x: 120, y: 850 },
+  { x: 100, y: 660 },
+  { x: 120, y: 460 },
+  { x: 200, y: 290 },
+  { x: 360, y: 175 },
+  { x: 570, y: 110 },
+  { x: 680, y: 95 },
 ];
 
-export const ROAD_LEFT_X = 40;
-export const ROAD_WIDTH = CANVAS_WIDTH - 80;
-export const LANE_WIDTH = ROAD_WIDTH / LANE_COUNT;
-
-function getLaneX(lane: number): number {
-  return ROAD_LEFT_X + lane * LANE_WIDTH + LANE_WIDTH / 2 - CAR_WIDTH / 2;
-}
-
-function getObstacleLaneX(lane: number): number {
-  return ROAD_LEFT_X + lane * LANE_WIDTH + LANE_WIDTH / 2 - OBSTACLE_WIDTH / 2;
-}
-
-function makeInitialGameData(): GameData {
-  const initDashLines: DashLine[] = [];
-  for (let lane = 0; lane < LANE_COUNT - 1; lane++) {
-    for (let i = 0; i < DASH_LINE_COUNT; i++) {
-      initDashLines.push({
-        lane,
-        y: i * (CANVAS_HEIGHT / DASH_LINE_COUNT),
-      });
-    }
-  }
-
-  return {
-    state: "idle",
-    score: 0,
-    lives: 3,
-    speedLevel: 1,
-    playerCar: {
-      x: getLaneX(1),
-      y: CANVAS_HEIGHT - PLAYER_Y_OFFSET - CAR_HEIGHT,
-      width: CAR_WIDTH,
-      height: CAR_HEIGHT,
-      color: "#39ff14",
-      roofColor: "#00cc00",
-      lane: 1,
-    },
-    obstacles: [],
-    dashLines: initDashLines,
-    roadScrollY: 0,
-    invincible: false,
-    invincibleTimer: 0,
-    spawnTimer: 0,
-    scoreFloat: 0,
-  };
-}
-
-export function useRoadRacer() {
-  const gameDataRef = useRef<GameData>(makeInitialGameData());
-  const stateRef = useRef<GameState>("idle");
-  const keysRef = useRef<Set<string>>(new Set());
-  const onStateChangeRef = useRef<((state: GameState) => void) | null>(null);
-  const onScoreChangeRef = useRef<
-    ((score: number, level: number, lives: number) => void) | null
-  >(null);
-  const rafRef = useRef<number>(0);
-
-  const getGameData = useCallback(() => gameDataRef.current, []);
-
-  const setOnStateChange = useCallback((cb: (state: GameState) => void) => {
-    onStateChangeRef.current = cb;
-  }, []);
-
-  const setOnScoreChange = useCallback(
-    (cb: (score: number, level: number, lives: number) => void) => {
-      onScoreChangeRef.current = cb;
-    },
-    [],
-  );
-
-  const startGame = useCallback(() => {
-    const gd = makeInitialGameData();
-    gd.state = "playing";
-    gameDataRef.current = gd;
-    stateRef.current = "playing";
-    onStateChangeRef.current?.("playing");
-  }, []);
-
-  const moveLeft = useCallback(() => {
-    const gd = gameDataRef.current;
-    if (gd.state !== "playing") return;
-    if (gd.playerCar.lane > 0) {
-      gd.playerCar.lane -= 1;
-      gd.playerCar.x = getLaneX(gd.playerCar.lane);
-    }
-  }, []);
-
-  const moveRight = useCallback(() => {
-    const gd = gameDataRef.current;
-    if (gd.state !== "playing") return;
-    if (gd.playerCar.lane < LANE_COUNT - 1) {
-      gd.playerCar.lane += 1;
-      gd.playerCar.x = getLaneX(gd.playerCar.lane);
-    }
-  }, []);
-
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      const key = e.key;
-      if (!keysRef.current.has(key)) {
-        keysRef.current.add(key);
-        if (key === "ArrowLeft" || key === "a" || key === "A") {
-          moveLeft();
-          e.preventDefault();
-        } else if (key === "ArrowRight" || key === "d" || key === "D") {
-          moveRight();
-          e.preventDefault();
-        } else if (
-          (key === " " || key === "Enter") &&
-          stateRef.current !== "playing"
-        ) {
-          startGame();
-          e.preventDefault();
-        }
-      }
-    },
-    [moveLeft, moveRight, startGame],
-  );
-
-  const handleKeyUp = useCallback((e: KeyboardEvent) => {
-    keysRef.current.delete(e.key);
-  }, []);
-
-  const spawnObstacle = useCallback(() => {
-    const gd = gameDataRef.current;
-    // Spawn at the bottom of the screen, moving upward (same direction as player)
-    const lane = Math.floor(Math.random() * LANE_COUNT);
-    const colorPick =
-      OBSTACLE_COLORS[Math.floor(Math.random() * OBSTACLE_COLORS.length)];
-    const speed =
-      BASE_SPEED + (gd.speedLevel - 1) * SPEED_INCREMENT + Math.random() * 0.5;
-
-    gd.obstacles.push({
-      x: getObstacleLaneX(lane),
-      y: CANVAS_HEIGHT + OBSTACLE_HEIGHT + 10,
-      width: OBSTACLE_WIDTH,
-      height: OBSTACLE_HEIGHT,
-      color: colorPick.body,
-      roofColor: colorPick.roof,
-      lane,
-      speed,
-    });
-  }, []);
-
-  const checkCollision = useCallback((a: Car, b: Car): boolean => {
-    const margin = 8; // forgiveness margin
-    return (
-      a.x + margin < b.x + b.width - margin &&
-      a.x + a.width - margin > b.x + margin &&
-      a.y + margin < b.y + b.height - margin &&
-      a.y + a.height - margin > b.y + margin
-    );
-  }, []);
-
-  const tick = useCallback(() => {
-    const gd = gameDataRef.current;
-    if (gd.state !== "playing") return;
-
-    const currentSpeed = BASE_SPEED + (gd.speedLevel - 1) * SPEED_INCREMENT;
-
-    // Update road scroll
-    gd.roadScrollY =
-      (gd.roadScrollY + currentSpeed) % (CANVAS_HEIGHT / DASH_LINE_COUNT);
-
-    // Update dash lines
-    for (const line of gd.dashLines) {
-      line.y += currentSpeed;
-      if (line.y > CANVAS_HEIGHT) {
-        line.y -= CANVAS_HEIGHT;
-      }
-    }
-
-    // Score increment
-    gd.scoreFloat += currentSpeed * 0.05;
-    const newScore = Math.floor(gd.scoreFloat / 10);
-    if (newScore !== gd.score) {
-      gd.score = newScore;
-      // Speed level up every kilometre
-      const newLevel = Math.floor(gd.score / SPEED_UP_INTERVAL) + 1;
-      if (newLevel !== gd.speedLevel) {
-        gd.speedLevel = newLevel;
-      }
-      onScoreChangeRef.current?.(gd.score, gd.speedLevel, gd.lives);
-    }
-
-    // Invincibility countdown
-    if (gd.invincible) {
-      gd.invincibleTimer--;
-      if (gd.invincibleTimer <= 0) {
-        gd.invincible = false;
-      }
-    }
-
-    // Spawn obstacles
-    gd.spawnTimer++;
-    const spawnInterval = Math.max(
-      30,
-      SPAWN_BASE_INTERVAL - (gd.speedLevel - 1) * 8,
-    );
-    if (gd.spawnTimer >= spawnInterval) {
-      gd.spawnTimer = 0;
-      spawnObstacle();
-      // Occasionally spawn 2 cars
-      if (gd.speedLevel > 2 && Math.random() < 0.3) {
-        spawnObstacle();
-      }
-    }
-
-    // Update obstacles — move upward (same direction as player)
-    const obstacleSpeed = currentSpeed * 1.3;
-    gd.obstacles = gd.obstacles.filter((obs) => {
-      obs.y -= obstacleSpeed;
-      // Collision check
-      if (!gd.invincible && checkCollision(gd.playerCar, obs)) {
-        gd.lives--;
-        gd.invincible = true;
-        gd.invincibleTimer = INVINCIBILITY_FRAMES;
-        onScoreChangeRef.current?.(gd.score, gd.speedLevel, gd.lives);
-        if (gd.lives <= 0) {
-          gd.state = "gameover";
-          stateRef.current = "gameover";
-          onStateChangeRef.current?.("gameover");
-        }
-        return false; // remove this obstacle on hit
-      }
-      // Remove when off the top of the screen
-      return obs.y > -OBSTACLE_HEIGHT - 10;
-    });
-  }, [spawnObstacle, checkCollision]);
-
-  const stopLoop = useCallback(() => {
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-    }
-  }, []);
-
-  const startLoop = useCallback(
-    (renderFn: () => void) => {
-      stopLoop();
-
-      const loop = () => {
-        tick();
-        renderFn();
-        if (stateRef.current === "playing") {
-          rafRef.current = requestAnimationFrame(loop);
-        }
-      };
-
-      rafRef.current = requestAnimationFrame(loop);
-    },
-    [tick, stopLoop],
-  );
-
-  return {
-    gameDataRef,
-    stateRef,
-    getGameData,
-    startGame,
-    moveLeft,
-    moveRight,
-    handleKeyDown,
-    handleKeyUp,
-    startLoop,
-    stopLoop,
-    setOnStateChange,
-    setOnScoreChange,
-    CANVAS_WIDTH,
-    CANVAS_HEIGHT,
-    ROAD_LEFT_X,
-    ROAD_WIDTH,
-    LANE_WIDTH,
-    LANE_COUNT,
-  };
-}
+export const AI_TEAM_DATA = [
+  { name: "VER", color: "#3671C6", glowColor: "#5a90e8" },
+  { name: "LEC", color: "#E8002D", glowColor: "#ff5577" },
+  { name: "NOR", color: "#FF8000", glowColor: "#ffaa44" },
+  { name: "ALO", color: "#006F62", glowColor: "#00b89a" },
+  { name: "SAI", color: "#005AFF", glowColor: "#4d8cff" },
+];

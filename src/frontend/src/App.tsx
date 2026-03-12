@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
   Crown,
-  Heart,
+  Flag,
   LogIn,
   LogOut,
   Medal,
@@ -14,7 +14,6 @@ import {
   Send,
   Star,
   Trophy,
-  Zap,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useState } from "react";
@@ -67,7 +66,6 @@ function Leaderboard({
 }) {
   return (
     <div className="w-full">
-      {/* Header */}
       <div className="flex items-center justify-center gap-2 mb-4">
         <Trophy className="w-4 h-4 text-neon-green" />
         <span
@@ -79,7 +77,6 @@ function Leaderboard({
         <Trophy className="w-4 h-4 text-neon-green" />
       </div>
 
-      {/* Personal Best */}
       {personalBest && (
         <motion.div
           initial={{ opacity: 0, x: -10 }}
@@ -106,7 +103,6 @@ function Leaderboard({
         </motion.div>
       )}
 
-      {/* Score list */}
       {isLoading ? (
         <div className="space-y-2">
           {[1, 2, 3, 4, 5].map((k) => (
@@ -157,7 +153,6 @@ function Leaderboard({
                       }
                 }
               >
-                {/* Rank indicator */}
                 <div className="w-8 flex-shrink-0 flex items-center justify-center">
                   {isTop3 && RankIcon ? (
                     <RankIcon
@@ -174,7 +169,6 @@ function Leaderboard({
                   )}
                 </div>
 
-                {/* Rank label for top 3 */}
                 {isTop3 && (
                   <span
                     className="text-[10px] font-black tracking-widest w-6 flex-shrink-0"
@@ -184,7 +178,6 @@ function Leaderboard({
                   </span>
                 )}
 
-                {/* Player name */}
                 <span
                   className={`flex-1 text-sm font-semibold truncate ${
                     isTop3 ? cfg!.textClass : "text-foreground/70"
@@ -193,7 +186,6 @@ function Leaderboard({
                   {entry.name}
                 </span>
 
-                {/* Score */}
                 <span
                   className="text-sm font-black font-mono tabular-nums flex-shrink-0"
                   style={{
@@ -204,7 +196,6 @@ function Leaderboard({
                   {entry.score.toString().padStart(6, "0")}
                 </span>
 
-                {/* Decorative dots for top 3 */}
                 {isTop3 && (
                   <div
                     className="absolute right-2 top-1 w-1 h-1 rounded-full"
@@ -220,51 +211,61 @@ function Leaderboard({
   );
 }
 
-function HUD({
+// Racing HUD — shown above the canvas while playing
+function RaceHUD({
   score,
-  lives,
   speedLevel,
+  lives,
 }: {
   score: number;
-  lives: number;
   speedLevel: number;
+  lives: number;
 }) {
+  const posColors = [
+    "#ffd700",
+    "#c0c0c0",
+    "#cd7f32",
+    "#ffffff",
+    "#ffffff",
+    "#ffffff",
+  ];
+  const posColor = posColors[lives - 1] || "#ffffff";
   return (
     <div
-      className="w-full max-w-[360px] flex items-center justify-between px-3 py-2 rounded-t-lg"
+      className="w-full max-w-[480px] flex items-center justify-between px-4 py-2 rounded-t-lg"
       style={{
-        background: "var(--hud-bg)",
-        borderBottom: "1px solid oklch(0.82 0.22 138 / 0.3)",
+        background: "oklch(0.08 0.01 260 / 0.95)",
+        borderBottom: "1px solid oklch(0.82 0.22 138 / 0.25)",
       }}
     >
-      {/* Score */}
       <div className="flex items-center gap-1.5">
-        <ChevronRight className="w-3.5 h-3.5 text-neon-green" />
-        <span className="text-neon-green font-bold text-sm font-mono tracking-wider">
-          {score.toString().padStart(6, "0")} pts
+        <Flag className="w-3.5 h-3.5" style={{ color: "var(--neon-green)" }} />
+        <span
+          className="text-xs font-bold font-mono tracking-wider"
+          style={{ color: "var(--neon-green)" }}
+        >
+          LAP {speedLevel}/{3}
         </span>
       </div>
-
-      {/* Speed Level */}
-      <div className="flex items-center gap-1">
-        <Zap className="w-3.5 h-3.5 text-yellow-400" />
-        <span className="text-yellow-400 text-xs font-bold">
-          LV.{speedLevel}
+      <div className="flex items-center gap-1.5">
+        <ChevronRight
+          className="w-3.5 h-3.5"
+          style={{ color: "var(--neon-green)" }}
+        />
+        <span
+          className="text-xs font-bold font-mono tracking-wider"
+          style={{ color: "var(--neon-green)" }}
+        >
+          {score.toString().padStart(4, "0")} PTS
         </span>
       </div>
-
-      {/* Lives */}
-      <div className="flex items-center gap-1">
-        {(["life-1", "life-2", "life-3"] as const).map((k, i) => (
-          <Heart
-            key={k}
-            className={`w-4 h-4 transition-all duration-300 ${
-              i < lives
-                ? "fill-red-500 text-red-500"
-                : "text-muted-foreground/30"
-            }`}
-          />
-        ))}
+      <div className="flex items-center gap-1.5">
+        <span
+          className="text-sm font-black font-mono"
+          style={{ color: posColor }}
+        >
+          P{lives}
+        </span>
       </div>
     </div>
   );
@@ -273,11 +274,10 @@ function HUD({
 export default function App() {
   const [screen, setScreen] = useState<ScreenState>("start");
   const [score, setScore] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [speedLevel, setSpeedLevel] = useState(1);
+  const [lives, setLives] = useState(1); // position
+  const [speedLevel, setSpeedLevel] = useState(1); // lap
   const [playerName, setPlayerName] = useState("TITOO");
   const [scoreSubmitted, setScoreSubmitted] = useState(false);
-  // Key used to remount the game component, forcing a fresh game
   const [gameKey, setGameKey] = useState(0);
 
   const { actor, isFetching } = useActor();
@@ -346,7 +346,7 @@ export default function App() {
 
   const handleStartPlaying = useCallback(() => {
     setScore(0);
-    setLives(3);
+    setLives(1);
     setSpeedLevel(1);
     setScoreSubmitted(false);
     setGameKey((k) => k + 1);
@@ -357,6 +357,9 @@ export default function App() {
     const name = playerName.trim() || "TITOO";
     submitMutation.mutate({ name, scoreVal: score });
   }, [playerName, score, submitMutation]);
+
+  const positionLabel =
+    ["1st", "2nd", "3rd", "4th", "5th", "6th"][lives - 1] || `${lives}th`;
 
   return (
     <div
@@ -374,7 +377,6 @@ export default function App() {
         }}
       />
 
-      {/* Atmospheric background */}
       <div
         className="fixed inset-0 pointer-events-none"
         style={{
@@ -386,7 +388,7 @@ export default function App() {
       {/* ── PLAYING SCREEN ── */}
       {screen === "playing" && (
         <div className="flex flex-col items-center justify-center min-h-dvh py-2">
-          <HUD score={score} lives={lives} speedLevel={speedLevel} />
+          <RaceHUD score={score} lives={lives} speedLevel={speedLevel} />
           <F1Game
             key={gameKey}
             onStateChange={handleGameStateChange}
@@ -424,11 +426,11 @@ export default function App() {
                   F1
                 </h1>
                 <p className="text-muted-foreground text-xs mt-1 tracking-widest uppercase">
-                  Race the night circuit
+                  3-Lap Circuit Race
                 </p>
               </motion.div>
 
-              {/* Game Over card */}
+              {/* Race Finished card */}
               {screen === "gameover" && (
                 <motion.div
                   initial={{ scale: 0.85, opacity: 0 }}
@@ -441,17 +443,18 @@ export default function App() {
                   }}
                 >
                   <p className="text-xs text-muted-foreground uppercase tracking-widest mb-1">
-                    Game Over
+                    Race Finished
                   </p>
                   <p
                     className="text-4xl font-black glow-green"
                     style={{ color: "var(--neon-green)" }}
                   >
-                    {score.toString().padStart(6, "0")} pts
+                    {score.toString().padStart(4, "0")} pts
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">Score</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Finished {positionLabel} — F1 Championship Points
+                  </p>
 
-                  {/* Submit score area */}
                   {!scoreSubmitted ? (
                     <div className="mt-4 flex flex-col gap-2">
                       {isLoggedIn ? (
@@ -490,7 +493,7 @@ export default function App() {
                       ) : (
                         <div className="text-center">
                           <p className="text-xs text-muted-foreground mb-2">
-                            Log in to save your score
+                            Log in to save your championship points
                           </p>
                           <Button
                             onClick={login}
@@ -519,12 +522,12 @@ export default function App() {
                     className="w-full mt-3 neon-btn border-neon-green/40 text-neon-green hover:bg-neon-green/10 font-bold"
                   >
                     <RotateCcw className="w-4 h-4 mr-2" />
-                    Play Again
+                    Race Again
                   </Button>
                 </motion.div>
               )}
 
-              {/* Start button (start screen only) */}
+              {/* Start button */}
               {screen === "start" && (
                 <motion.div
                   className="w-full"
@@ -539,35 +542,44 @@ export default function App() {
                     style={{
                       background: "oklch(0.82 0.22 138)",
                       color: "oklch(0.08 0.005 260)",
-                      letterSpacing: "0.1em",
                     }}
                   >
-                    PLAY
+                    <Flag className="w-5 h-5 mr-2" />
+                    START RACE
                   </Button>
                   <p className="text-center text-xs text-muted-foreground mt-2">
-                    Arrow keys / A·D to steer · Space or Enter to start
+                    3 laps · 5 AI opponents · Arrow keys / WASD
                   </p>
                 </motion.div>
               )}
 
-              {/* Auth */}
-              <div className="flex justify-end w-full">
+              {/* Login/out */}
+              <div className="flex items-center justify-between w-full">
                 {isLoggedIn ? (
-                  <Button
-                    onClick={clear}
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-foreground text-xs"
-                  >
-                    <LogOut className="w-3 h-3 mr-1" />
-                    Logout
-                  </Button>
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      Logged in
+                    </span>
+                    <Button
+                      data-ocid="auth.logout_button"
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs text-muted-foreground"
+                      onClick={() => {
+                        clear();
+                      }}
+                    >
+                      <LogOut className="w-3 h-3 mr-1" />
+                      Logout
+                    </Button>
+                  </>
                 ) : (
                   <Button
-                    onClick={login}
+                    data-ocid="auth.login_button"
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground hover:text-neon-green text-xs"
+                    className="text-xs text-muted-foreground ml-auto"
+                    onClick={login}
                     disabled={isInitializing}
                   >
                     <LogIn className="w-3 h-3 mr-1" />
@@ -578,42 +590,34 @@ export default function App() {
 
               {/* Leaderboard */}
               <motion.div
-                className="w-full rounded-xl p-4"
-                style={{
-                  background: "oklch(0.11 0.01 260 / 0.95)",
-                  border: "1px solid oklch(0.22 0.025 260)",
-                  backdropFilter: "blur(8px)",
-                }}
-                initial={{ y: 30, opacity: 0 }}
+                className="w-full"
+                initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.5, duration: 0.5 }}
               >
                 <Leaderboard
-                  scores={leaderboard}
-                  personalBest={personalBest}
-                  isLoading={lbLoading || isFetching}
+                  scores={leaderboard as ScoreEntry[]}
+                  personalBest={personalBest as ScoreEntry | null}
+                  isLoading={lbLoading}
                 />
               </motion.div>
 
               {/* Footer */}
-              <p className="text-xs text-muted-foreground/50 text-center mt-2">
-                © {new Date().getFullYear()}.{" "}
+              <p className="text-xs text-muted-foreground/40 text-center mt-2">
+                © {new Date().getFullYear()}. Built with love using{" "}
                 <a
-                  href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
+                  href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(typeof window !== "undefined" ? window.location.hostname : "")}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="hover:text-neon-green transition-colors"
+                  className="underline underline-offset-2 hover:text-muted-foreground/70"
                 >
-                  Built with ♥ using caffeine.ai
+                  caffeine.ai
                 </a>
               </p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Scanlines overlay */}
-      <div className="fixed inset-0 scanlines pointer-events-none opacity-30" />
     </div>
   );
 }

@@ -1,960 +1,1219 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  CANVAS_HEIGHT,
-  CANVAS_WIDTH,
-  type Car,
-  type GameData,
-  LANE_COUNT,
-  LANE_WIDTH,
-  ROAD_LEFT_X,
-  ROAD_WIDTH,
-  useRoadRacer,
+  AI_TEAM_DATA,
+  CANVAS_H,
+  CANVAS_W,
+  type CarData,
+  F1_POINTS,
+  type GamePhase,
+  type Point,
+  type RaceState,
+  TOTAL_LAPS,
+  TRACK_WIDTH,
+  WAYPOINTS,
 } from "../hooks/useRoadRacer";
 
-interface RoadRacerGameProps {
-  onStateChange: (state: "idle" | "playing" | "gameover") => void;
-  onScoreChange: (score: number, level: number, lives: number) => void;
-  autoStart?: boolean;
+const N = WAYPOINTS.length;
+const HALF_TRACK = TRACK_WIDTH / 2;
+const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
+const FINISH_DISPLAY_FRAMES = 300; // 5 seconds
+
+// Starting grid positions (near WP[0] = {800, 100})
+const GRID_POSITIONS: Point[] = [
+  { x: 770, y: 88 },
+  { x: 770, y: 112 },
+  { x: 700, y: 88 },
+  { x: 700, y: 112 },
+  { x: 630, y: 88 },
+  { x: 630, y: 112 },
+];
+const START_HEADING = Math.atan2(100 - 95, 800 - 680); // toward WP[0] from WP[21]
+
+function createInitialState(): RaceState {
+  const player: CarData = {
+    x: GRID_POSITIONS[0].x,
+    y: GRID_POSITIONS[0].y,
+    heading: START_HEADING,
+    speed: 0,
+    maxSpeed: 8,
+    laps: 0,
+    targetWP: 1,
+    lapReady: false,
+    color: "#00ff80",
+    glowColor: "#00ff80",
+    name: "TITOO",
+    isPlayer: true,
+    finished: false,
+    finishPos: 0,
+  };
+
+  const ais: CarData[] = AI_TEAM_DATA.map((team, i) => ({
+    x: GRID_POSITIONS[i + 1].x,
+    y: GRID_POSITIONS[i + 1].y,
+    heading: START_HEADING,
+    speed: 0,
+    maxSpeed: 4.5 + Math.random() * 0.7,
+    laps: 0,
+    targetWP: 1,
+    lapReady: false,
+    color: team.color,
+    glowColor: team.glowColor,
+    name: team.name,
+    isPlayer: false,
+    finished: false,
+    finishPos: 0,
+  }));
+
+  return {
+    phase: "idle",
+    cars: [player, ...ais],
+    countdown: COUNTDOWN_FRAMES,
+    finishTimer: FINISH_DISPLAY_FRAMES,
+    sortedIdx: [0, 1, 2, 3, 4, 5],
+    playerPos: 1,
+    currentLap: 1,
+    finalPoints: 0,
+  };
 }
 
-// ── F1 crowd palette: team colors + skin tones ──────────────────────────────
-const CROWD_COLORS = [
-  "#e8002d", // Ferrari red
-  "#ff8000", // McLaren orange
-  "#0067ff", // Williams blue
-  "#006f62", // Mercedes teal
-  "#3671c6", // Red Bull blue
-  "#229971", // Aston Martin green
-  "#e8002d", // Ferrari red (more weight)
-  "#ffffff", // white shirt
-  "#f5f0e8", // light skin
-  "#c68642", // medium skin
-  "#ffcc00", // yellow jersey
-  "#9b59b6", // purple tifosi
-  "#ff6b35", // orange fan
-  "#1abc9c", // teal fan
-];
+function advanceWaypoint(car: CarData, finishCount: { val: number }) {
+  const wp = WAYPOINTS[car.targetWP];
+  const dx = wp.x - car.x;
+  const dy = wp.y - car.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const threshold = car.isPlayer ? 80 : 60;
 
-const FLAG_COLORS = [
-  ["#e8002d", "#ffffff"], // Italy
-  ["#ff8000", "#000000"], // McLaren
-  ["#0000cc", "#ffffff"], // Blue flag
-  ["#ffdd00", "#000000"], // Germany
-  ["#ffffff", "#e8002d"], // Red/White
-  ["#00cc44", "#ffffff"], // Green flag
-];
-
-/** Simple seeded pseudo-random for deterministic crowd layout */
-function seededRand(seed: number): number {
-  let s = seed;
-  s = (s ^ (s << 13)) & 0xffffffff;
-  s = (s ^ (s >> 17)) & 0xffffffff;
-  s = (s ^ (s << 5)) & 0xffffffff;
-  return (s >>> 0) / 0xffffffff;
+  if (dist < threshold) {
+    if (car.targetWP === 0 && car.lapReady) {
+      car.laps++;
+      car.lapReady = false;
+      if (car.laps >= TOTAL_LAPS && !car.finished) {
+        car.finished = true;
+        finishCount.val++;
+        car.finishPos = finishCount.val;
+      }
+    }
+    car.targetWP = (car.targetWP + 1) % N;
+  }
+  if (car.targetWP >= Math.floor(N / 2)) {
+    car.lapReady = true;
+  }
 }
 
-/**
- * Draws animated F1 crowd/audience in the off-road strips.
- * Left strip: x 0..ROAD_LEFT_X  (~60px)
- * Right strip: x ROAD_LEFT_X+ROAD_WIDTH..CANVAS_WIDTH  (~60px)
- */
-function drawCrowd(ctx: CanvasRenderingContext2D, _scrollY: number): void {
+function updateAI(car: CarData, finishCount: { val: number }) {
+  if (car.finished) return;
+  const wp = WAYPOINTS[car.targetWP];
+  const dx = wp.x - car.x;
+  const dy = wp.y - car.y;
+
+  const targetAngle = Math.atan2(dy, dx);
+  let diff = targetAngle - car.heading;
+  while (diff > Math.PI) diff -= 2 * Math.PI;
+  while (diff < -Math.PI) diff += 2 * Math.PI;
+  car.heading += Math.sign(diff) * Math.min(Math.abs(diff), 0.07);
+
+  car.speed = Math.min(car.speed + 0.25, car.maxSpeed);
+  car.x += Math.cos(car.heading) * car.speed;
+  car.y += Math.sin(car.heading) * car.speed;
+
+  advanceWaypoint(car, finishCount);
+}
+
+function updatePlayer(
+  car: CarData,
+  keys: Set<string>,
+  finishCount: { val: number },
+) {
+  if (car.finished) return;
+  if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
+    car.speed = Math.min(car.speed + 0.3, car.maxSpeed);
+  } else if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
+    car.speed = Math.max(car.speed - 0.5, -2);
+  } else {
+    car.speed *= 0.97;
+  }
+
+  if (Math.abs(car.speed) > 0.3) {
+    const steer = 0.042 * (Math.abs(car.speed) / car.maxSpeed + 0.3);
+    if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) {
+      car.heading -= steer;
+    }
+    if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) {
+      car.heading += steer;
+    }
+  }
+
+  car.x += Math.cos(car.heading) * car.speed;
+  car.y += Math.sin(car.heading) * car.speed;
+
+  advanceWaypoint(car, finishCount);
+}
+
+function getProgress(car: CarData): number {
+  return car.laps + car.targetWP / N;
+}
+
+function sortPositions(cars: CarData[]): number[] {
+  return cars
+    .map((_, i) => i)
+    .sort((a, b) => getProgress(cars[b]) - getProgress(cars[a]));
+}
+
+// ── Build Catmull-Rom spline path ────────────────────────────────────────────
+function buildSplinePath(points: Point[], camX: number, camY: number): Path2D {
+  const path = new Path2D();
+  const n = points.length;
+  path.moveTo(points[0].x - camX, points[0].y - camY);
+  for (let i = 0; i < n; i++) {
+    const p0 = points[(i - 1 + n) % n];
+    const p1 = points[i];
+    const p2 = points[(i + 1) % n];
+    const p3 = points[(i + 2) % n];
+    const t = 0.5;
+    const cp1x = p1.x + ((p2.x - p0.x) * t) / 2;
+    const cp1y = p1.y + ((p2.y - p0.y) * t) / 2;
+    const cp2x = p2.x - ((p3.x - p1.x) * t) / 2;
+    const cp2y = p2.y - ((p3.y - p1.y) * t) / 2;
+    path.bezierCurveTo(
+      cp1x - camX,
+      cp1y - camY,
+      cp2x - camX,
+      cp2y - camY,
+      p2.x - camX,
+      p2.y - camY,
+    );
+  }
+  path.closePath();
+  return path;
+}
+
+function getTrackNormal(i: number): Point {
+  const prev = WAYPOINTS[(i - 1 + N) % N];
+  const next = WAYPOINTS[(i + 1) % N];
+  const dx = next.x - prev.x;
+  const dy = next.y - prev.y;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  return { x: -dy / len, y: dx / len };
+}
+
+// ── Draw track ───────────────────────────────────────────────────────────────
+function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
+  const path = buildSplinePath(WAYPOINTS, camX, camY);
+
+  // Crowd / grandstand strips (outside barriers)
+  ctx.lineWidth = TRACK_WIDTH + 130;
+  ctx.strokeStyle = "#1a2a1a";
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke(path);
+
+  // Crowd color segments
+  const teamColors = [
+    "#e8002d",
+    "#3671c6",
+    "#ff8000",
+    "#ffffff",
+    "#006f62",
+    "#ff0090",
+  ];
+  const segW = TRACK_WIDTH + 110;
+  ctx.lineWidth = segW;
+  // We paint crowd as a series of colored dashes
+  for (let c = 0; c < 3; c++) {
+    const dashLen = 40 + c * 25;
+    ctx.setLineDash([dashLen, dashLen * 2]);
+    ctx.lineDashOffset = c * 60;
+    ctx.strokeStyle = `${teamColors[c]}33`;
+    ctx.stroke(path);
+  }
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // Armco barriers (silver)
+  ctx.lineWidth = TRACK_WIDTH + 28;
+  ctx.strokeStyle = "#8a9aaa";
+  ctx.stroke(path);
+
+  // Red/white kerb stripe
+  ctx.lineWidth = TRACK_WIDTH + 18;
+  const kerbLen = 24;
+  ctx.setLineDash([kerbLen, kerbLen]);
+  ctx.strokeStyle = "#e8002d";
+  ctx.stroke(path);
+  ctx.lineDashOffset = kerbLen;
+  ctx.strokeStyle = "#ffffff";
+  ctx.stroke(path);
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // Track surface
+  ctx.lineWidth = TRACK_WIDTH;
+  ctx.strokeStyle = "#2d2d2d";
+  ctx.stroke(path);
+
+  // Track surface lighter band (highlights center)
+  ctx.lineWidth = TRACK_WIDTH - 20;
+  ctx.strokeStyle = "#333333";
+  ctx.stroke(path);
+
+  // Dashed center line
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.setLineDash([24, 32]);
+  ctx.stroke(path);
+  ctx.setLineDash([]);
+}
+
+// ── Draw start/finish line ───────────────────────────────────────────────────
+function drawStartLine(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  camY: number,
+) {
+  const wp = WAYPOINTS[0];
+  const norm = getTrackNormal(0);
+  const sx = wp.x - camX;
+  const sy = wp.y - camY;
+
+  // Checkered start line
+  const numCells = 8;
+  const cellSize = HALF_TRACK / (numCells / 2);
   ctx.save();
+  ctx.translate(sx, sy);
+  const dir = WAYPOINTS[1];
+  ctx.rotate(Math.atan2(dir.y - wp.y, dir.x - wp.x) + Math.PI / 2);
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < numCells; col++) {
+      ctx.fillStyle = (row + col) % 2 === 0 ? "white" : "black";
+      ctx.fillRect(
+        col * cellSize - HALF_TRACK,
+        row * cellSize - cellSize,
+        cellSize,
+        cellSize,
+      );
+    }
+  }
+  ctx.restore();
 
-  const ROW_H = 14; // vertical spacing between crowd rows
-  const COL_W = 9; // horizontal spacing between people
-  const HEAD_R = 3; // head circle radius
-  const BODY_H = 5; // body rectangle height
-  const BODY_W = 5; // body rectangle width
+  // Finish line
+  void norm;
+  void sx;
+  void sy;
+}
 
-  // How many rows to cover the full canvas + 1 extra for seamless scroll
-  const totalRows = Math.ceil(CANVAS_HEIGHT / ROW_H) + 2;
-  const scrollOffset = 0;
+// ── Draw car ─────────────────────────────────────────────────────────────────
+function drawCar(
+  ctx: CanvasRenderingContext2D,
+  car: CarData,
+  sx: number,
+  sy: number,
+) {
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(car.heading + Math.PI / 2);
 
-  // grandstand backdrop — slightly lighter dark tone to hint at tiers
-  ctx.fillStyle = "#0d1520";
-  ctx.fillRect(0, 0, ROAD_LEFT_X, CANVAS_HEIGHT);
-  ctx.fillRect(
-    ROAD_LEFT_X + ROAD_WIDTH,
-    0,
-    CANVAS_WIDTH - (ROAD_LEFT_X + ROAD_WIDTH),
-    CANVAS_HEIGHT,
-  );
+  if (car.isPlayer) {
+    // Triple glow layers
+    ctx.shadowColor = car.glowColor;
+    ctx.shadowBlur = 28;
+    ctx.fillStyle = car.color;
+    ctx.fillRect(-8, -16, 16, 32);
+    ctx.shadowBlur = 16;
+    ctx.fillRect(-8, -16, 16, 32);
+    ctx.shadowBlur = 0;
+  }
 
-  // Subtle horizontal grandstand tier lines
-  ctx.strokeStyle = "rgba(255,255,255,0.04)";
-  ctx.lineWidth = 1;
-  for (let t = 0; t < totalRows; t++) {
-    const ty = t * ROW_H * 2 - scrollOffset - ROW_H;
+  // Body
+  ctx.fillStyle = car.color;
+  ctx.beginPath();
+  ctx.roundRect(-6, -14, 12, 28, 2);
+  ctx.fill();
+
+  // Nose
+  ctx.beginPath();
+  ctx.moveTo(-4, -14);
+  ctx.lineTo(4, -14);
+  ctx.lineTo(2, -20);
+  ctx.lineTo(-2, -20);
+  ctx.closePath();
+  ctx.fill();
+
+  // HALO (player only)
+  if (car.isPlayer) {
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(0, ty);
-    ctx.lineTo(ROAD_LEFT_X, ty);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(ROAD_LEFT_X + ROAD_WIDTH, ty);
-    ctx.lineTo(CANVAS_WIDTH, ty);
+    ctx.ellipse(0, -8, 4.5, 2, 0, 0, Math.PI * 2);
     ctx.stroke();
   }
 
-  // ── Draw spectators ────────────────────────────────────────────────────────
-  for (let row = -1; row < totalRows; row++) {
-    const rowY = row * ROW_H - scrollOffset;
-    // Stagger alternate rows by half column width
-    const stagger = row % 2 === 0 ? 0 : COL_W * 0.5;
+  // Front wing
+  ctx.fillStyle = car.isPlayer ? "#00cc60" : car.color;
+  ctx.fillRect(-11, -16, 22, 4);
 
-    // ── Left strip ──────────────────────────────────────────────────────────
-    const leftCols = Math.floor(ROAD_LEFT_X / COL_W) + 1;
-    for (let col = 0; col < leftCols; col++) {
-      const px = col * COL_W + stagger;
-      if (px > ROAD_LEFT_X - 2) continue; // don't bleed onto curb
+  // Rear wing
+  ctx.fillStyle = car.isPlayer ? "#00cc60" : car.color;
+  ctx.fillRect(-10, 9, 20, 5);
 
-      const seed = row * 97 + col * 31;
-      const colorIdx = Math.floor(seededRand(seed) * CROWD_COLORS.length);
-      const bodyColor = CROWD_COLORS[colorIdx];
-      const skinTone = seededRand(seed + 7) > 0.5 ? "#f5d5b8" : "#c68642";
-      const hasFlag = seededRand(seed + 13) > 0.82;
+  // Cockpit
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.beginPath();
+  ctx.ellipse(0, -4, 4, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
 
-      // Body
-      ctx.fillStyle = bodyColor;
-      ctx.fillRect(px - BODY_W / 2, rowY, BODY_W, BODY_H);
+  // Wheels
+  const wheelColor = "#222222";
+  ctx.fillStyle = wheelColor;
+  ctx.fillRect(-10, -10, 4, 8); // FL
+  ctx.fillRect(6, -10, 4, 8); // FR
+  ctx.fillRect(-10, 5, 4, 8); // RL
+  ctx.fillRect(6, 5, 4, 8); // RR
 
-      // Head
-      ctx.fillStyle = skinTone;
-      ctx.beginPath();
-      ctx.arc(px, rowY - HEAD_R, HEAD_R, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Flag (small waving rectangle on a stick)
-      if (hasFlag) {
-        const flagPair =
-          FLAG_COLORS[Math.floor(seededRand(seed + 3) * FLAG_COLORS.length)];
-        const flutter = 0;
-        const stickX = px + 3;
-        const stickTopY = rowY - HEAD_R * 2 - 8;
-        // Stick
-        ctx.strokeStyle = "rgba(200,200,200,0.6)";
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(stickX, rowY - HEAD_R);
-        ctx.lineTo(stickX, stickTopY);
-        ctx.stroke();
-        // Flag top stripe
-        ctx.fillStyle = flagPair[0];
-        ctx.beginPath();
-        ctx.moveTo(stickX, stickTopY);
-        ctx.lineTo(stickX + 5 + flutter, stickTopY + 2);
-        ctx.lineTo(stickX + 5 + flutter * 0.6, stickTopY + 4);
-        ctx.lineTo(stickX, stickTopY + 4);
-        ctx.closePath();
-        ctx.fill();
-        // Flag bottom stripe
-        ctx.fillStyle = flagPair[1];
-        ctx.beginPath();
-        ctx.moveTo(stickX, stickTopY + 4);
-        ctx.lineTo(stickX + 5 + flutter * 0.6, stickTopY + 4);
-        ctx.lineTo(stickX + 5 + flutter * 0.3, stickTopY + 7);
-        ctx.lineTo(stickX, stickTopY + 7);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-
-    // ── Right strip ─────────────────────────────────────────────────────────
-    const rightStart = ROAD_LEFT_X + ROAD_WIDTH;
-    const rightWidth = CANVAS_WIDTH - rightStart;
-    const rightCols = Math.floor(rightWidth / COL_W) + 1;
-    for (let col = 0; col < rightCols; col++) {
-      const px = rightStart + col * COL_W + stagger;
-      if (px > CANVAS_WIDTH - 2) continue;
-
-      const seed = row * 113 + col * 53 + 500;
-      const colorIdx = Math.floor(seededRand(seed) * CROWD_COLORS.length);
-      const bodyColor = CROWD_COLORS[colorIdx];
-      const skinTone = seededRand(seed + 7) > 0.5 ? "#f5d5b8" : "#c68642";
-      const hasFlag = seededRand(seed + 13) > 0.82;
-
-      // Body
-      ctx.fillStyle = bodyColor;
-      ctx.fillRect(px - BODY_W / 2, rowY, BODY_W, BODY_H);
-
-      // Head
-      ctx.fillStyle = skinTone;
-      ctx.beginPath();
-      ctx.arc(px, rowY - HEAD_R, HEAD_R, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Flag
-      if (hasFlag) {
-        const flagPair =
-          FLAG_COLORS[Math.floor(seededRand(seed + 3) * FLAG_COLORS.length)];
-        const flutter = 0;
-        const stickX = px + 3;
-        const stickTopY = rowY - HEAD_R * 2 - 8;
-        ctx.strokeStyle = "rgba(200,200,200,0.6)";
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(stickX, rowY - HEAD_R);
-        ctx.lineTo(stickX, stickTopY);
-        ctx.stroke();
-        ctx.fillStyle = flagPair[0];
-        ctx.beginPath();
-        ctx.moveTo(stickX, stickTopY);
-        ctx.lineTo(stickX + 5 + flutter, stickTopY + 2);
-        ctx.lineTo(stickX + 5 + flutter * 0.6, stickTopY + 4);
-        ctx.lineTo(stickX, stickTopY + 4);
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = flagPair[1];
-        ctx.beginPath();
-        ctx.moveTo(stickX, stickTopY + 4);
-        ctx.lineTo(stickX + 5 + flutter * 0.6, stickTopY + 4);
-        ctx.lineTo(stickX + 5 + flutter * 0.3, stickTopY + 7);
-        ctx.lineTo(stickX, stickTopY + 7);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
+  if (car.isPlayer) {
+    // Glowing rim detail
+    ctx.strokeStyle = car.glowColor;
+    ctx.lineWidth = 1;
+    ctx.shadowColor = car.glowColor;
+    ctx.shadowBlur = 6;
+    ctx.strokeRect(-10, -10, 4, 8);
+    ctx.strokeRect(6, -10, 4, 8);
+    ctx.strokeRect(-10, 5, 4, 8);
+    ctx.strokeRect(6, 5, 4, 8);
   }
 
   ctx.restore();
 }
 
-/**
- * Draws a top-down F1 car facing upward (nose at top, tail at bottom).
- * All cars — player and AI — face the same direction.
- */
-function drawF1Car(ctx: CanvasRenderingContext2D, car: Car, alpha = 1): void {
+// ── Draw minimap ─────────────────────────────────────────────────────────────
+function drawMinimap(ctx: CanvasRenderingContext2D, cars: CarData[]) {
+  const mx = CANVAS_W - 215;
+  const my = CANVAS_H - 165;
+  const mw = 200;
+  const mh = 150;
+
+  // Background
+  ctx.fillStyle = "rgba(0,0,0,0.75)";
+  ctx.beginPath();
+  ctx.roundRect(mx - 5, my - 5, mw + 10, mh + 10, 8);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.2)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const worldMinX = 80;
+  const worldMinY = 80;
+  const worldW = 1430;
+  const worldH = 970;
+  const scaleX = mw / worldW;
+  const scaleY = mh / worldH;
+
+  // Draw track outline on minimap
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const wp = WAYPOINTS[i % N];
+    const px = mx + (wp.x - worldMinX) * scaleX;
+    const py = my + (wp.y - worldMinY) * scaleY;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = "rgba(120,120,120,0.9)";
+  ctx.lineWidth = 8;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  // Draw start line on minimap
+  const wp0 = WAYPOINTS[0];
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = 2;
+  const norm = getTrackNormal(0);
+  ctx.beginPath();
+  ctx.moveTo(
+    mx + (wp0.x - worldMinX + norm.x * 8) * scaleX,
+    my + (wp0.y - worldMinY + norm.y * 8) * scaleY,
+  );
+  ctx.lineTo(
+    mx + (wp0.x - worldMinX - norm.x * 8) * scaleX,
+    my + (wp0.y - worldMinY - norm.y * 8) * scaleY,
+  );
+  ctx.stroke();
+
+  // Draw car dots
+  for (const car of cars) {
+    const px = mx + (car.x - worldMinX) * scaleX;
+    const py = my + (car.y - worldMinY) * scaleY;
+    ctx.beginPath();
+    ctx.arc(px, py, car.isPlayer ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = car.color;
+    if (car.isPlayer) {
+      ctx.shadowColor = car.glowColor;
+      ctx.shadowBlur = 8;
+    }
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.font = "bold 9px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.fillText("MAP", mx + mw - 24, my + mh - 4);
+}
+
+// ── Draw HUD ─────────────────────────────────────────────────────────────────
+function drawHUD(
+  ctx: CanvasRenderingContext2D,
+  state: RaceState,
+  playerSpeedPx: number,
+) {
+  const player = state.cars[0];
+  const currentLap = Math.min(player.laps + 1, TOTAL_LAPS);
+  const playerPos = state.sortedIdx.findIndex((i) => i === 0) + 1;
+  const speedKmh = Math.round(Math.abs(playerSpeedPx) * 45);
+
+  // HUD panel top-left
+  const hudX = 10;
+  const hudY = 10;
+  const hudW = 190;
+  const hudH = 80;
+
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.beginPath();
+  ctx.roundRect(hudX, hudY, hudW, hudH, 8);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,255,128,0.35)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // LAP
+  ctx.font = "bold 11px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fillText("LAP", hudX + 10, hudY + 22);
+  ctx.font = "bold 22px monospace";
+  ctx.fillStyle = "#00ff80";
+  ctx.shadowColor = "#00ff80";
+  ctx.shadowBlur = 8;
+  ctx.fillText(`${currentLap} / ${TOTAL_LAPS}`, hudX + 10, hudY + 46);
+  ctx.shadowBlur = 0;
+
+  // POSITION
+  ctx.font = "bold 11px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fillText("POS", hudX + 110, hudY + 22);
+  const posColors = [
+    "#ffd700",
+    "#c0c0c0",
+    "#cd7f32",
+    "#ffffff",
+    "#ffffff",
+    "#ffffff",
+  ];
+  ctx.font = "bold 22px monospace";
+  ctx.fillStyle = posColors[playerPos - 1] || "#ffffff";
+  if (playerPos <= 3) {
+    ctx.shadowColor = posColors[playerPos - 1];
+    ctx.shadowBlur = 10;
+  }
+  ctx.fillText(`P${playerPos}`, hudX + 110, hudY + 46);
+  ctx.shadowBlur = 0;
+
+  // SPEED
+  ctx.font = "bold 11px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fillText(`${speedKmh} km/h`, hudX + 10, hudY + 68);
+
+  // PLAYER NAME
+  ctx.font = "bold 11px monospace";
+  ctx.fillStyle = "rgba(0,255,128,0.7)";
+  ctx.fillText("TITOO", hudX + 110, hudY + 68);
+}
+
+// ── Draw countdown ───────────────────────────────────────────────────────────
+function drawCountdown(ctx: CanvasRenderingContext2D, frames: number) {
+  const secLeft = Math.ceil(frames / 60);
+  const isGo = frames <= 0;
+  const text = isGo ? "GO!" : String(secLeft);
+  const alpha = isGo
+    ? Math.max(0, 1 - Math.abs(frames) / 40)
+    : 1 - (((frames % 60) / 60) * 0.4 + 0.0);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = "bold 96px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const color = isGo ? "#00ff80" : secLeft === 1 ? "#ff4444" : "#ffdd00";
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 30;
+  ctx.fillText(text, CANVAS_W / 2, CANVAS_H / 2 - 40);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// ── Draw finish results ───────────────────────────────────────────────────────
+function drawFinishScreen(
+  ctx: CanvasRenderingContext2D,
+  state: RaceState,
+  alpha: number,
+) {
   ctx.save();
   ctx.globalAlpha = alpha;
 
-  const { x, y, width: w, height: h, color, roofColor } = car;
-  const isPlayer = color === "#39ff14";
+  // Semi-transparent panel
+  const pw = 320;
+  const ph = 280;
+  const px = (CANVAS_W - pw) / 2;
+  const py = (CANVAS_H - ph) / 2 - 30;
 
-  const cx = x + w / 2;
-
-  // nose at top edge, tail at bottom edge — same for all cars
-  const nose = y;
-  const tail = y + h;
-
-  // ── proportional measurements ───────────────────────────────────────────────
-  const bodyW = w * 0.36;
-  const bodyX = x + (w - bodyW) / 2;
-
-  // Sidepod rectangles (longer, with air intake detail)
-  const podW = w * 0.19;
-  const podH = h * 0.32;
-  const podY = nose + h * 0.27;
-  const podLeftX = x + w * 0.03;
-  const podRightX = x + w - podW - w * 0.03;
-
-  // Front wing
-  const fwY = nose + h * 0.03;
-  const fwH = h * 0.05;
-  const fwW = w * 0.9;
-  const fwX = x + (w - fwW) / 2;
-
-  // Rear wing
-  const rwY = tail - h * 0.1;
-  const rwH = h * 0.07;
-  const rwW = w * 0.92;
-  const rwX = x + (w - rwW) / 2;
-
-  // Nose cone
-  const noseTipY = nose;
-  const noseBaseY = nose + h * 0.2;
-
-  // Cockpit oval
-  const cpW = bodyW * 0.62;
-  const cpH = h * 0.16;
-  const cpX = cx;
-  const cpY = nose + h * 0.4;
-
-  // Engine cover / airbox bump position
-  const airboxY = nose + h * 0.52;
-  const airboxH = h * 0.12;
-  const airboxW = bodyW * 0.55;
-
-  // Wheels
-  const wheelR = w * 0.135;
-  const fwWheelY = nose + h * 0.22;
-  const rwWheelY = tail - h * 0.22;
-  const wheelLX = x + w * 0.04 + wheelR;
-  const wheelRX = x + w - w * 0.04 - wheelR;
-
-  // ── PLAYER: multi-layer neon glow ───────────────────────────────────────────
-  if (isPlayer) {
-    // Outer diffuse glow
-    ctx.shadowColor = "#39ff14";
-    ctx.shadowBlur = 40;
-    ctx.strokeStyle = "#39ff14";
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(bodyX - 4, noseBaseY - 4, bodyW + 8, tail - noseBaseY + 4);
-    ctx.shadowBlur = 24;
-    ctx.strokeRect(bodyX - 2, noseBaseY - 2, bodyW + 4, tail - noseBaseY + 2);
-    ctx.shadowBlur = 0;
-  }
-
-  // ── side pods ───────────────────────────────────────────────────────────────
-  ctx.fillStyle = color;
-  if (isPlayer) {
-    ctx.shadowColor = "#39ff14";
-    ctx.shadowBlur = 12;
-  }
+  ctx.fillStyle = "rgba(5,8,16,0.92)";
   ctx.beginPath();
-  ctx.roundRect(podLeftX, podY, podW, podH, 3);
+  ctx.roundRect(px, py, pw, ph, 12);
   ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(podRightX, podY, podW, podH, 3);
-  ctx.fill();
+  ctx.strokeStyle = "rgba(0,255,128,0.5)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Title
+  ctx.textAlign = "center";
+  ctx.font = "bold 28px monospace";
+  ctx.fillStyle = "#00ff80";
+  ctx.shadowColor = "#00ff80";
+  ctx.shadowBlur = 16;
+  ctx.fillText("RACE FINISHED", CANVAS_W / 2, py + 40);
   ctx.shadowBlur = 0;
 
-  // Air intake detail on sidepods (small dark cut)
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.beginPath();
-  ctx.roundRect(
-    podLeftX + podW * 0.15,
-    podY + podH * 0.2,
-    podW * 0.65,
-    podH * 0.3,
-    2,
-  );
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(
-    podRightX + podW * 0.2,
-    podY + podH * 0.2,
-    podW * 0.65,
-    podH * 0.3,
-    2,
-  );
-  ctx.fill();
+  // Results header
+  ctx.font = "bold 12px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.fillText("FINAL CLASSIFICATION", CANVAS_W / 2, py + 65);
 
-  // Sidepod highlight
-  ctx.fillStyle = "rgba(255,255,255,0.1)";
-  ctx.beginPath();
-  ctx.roundRect(podLeftX + 2, podY + 2, podW * 0.5, 3, 1);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(podRightX + podW * 0.5 - 2, podY + 2, podW * 0.5, 3, 1);
-  ctx.fill();
-
-  // ── main body (monocoque) ───────────────────────────────────────────────────
-  if (isPlayer) {
-    ctx.shadowColor = "#39ff14";
-    ctx.shadowBlur = 16;
-  }
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.roundRect(bodyX, noseBaseY, bodyW, tail - noseBaseY - h * 0.06, 4);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // ── nose cone (longer, more tapered) ────────────────────────────────────────
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(cx, noseTipY);
-  ctx.lineTo(cx - bodyW * 0.48, noseBaseY);
-  ctx.lineTo(cx + bodyW * 0.48, noseBaseY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Nose cone center stripe
-  const noseStripeColor = isPlayer
-    ? "rgba(0,0,0,0.3)"
-    : "rgba(255,255,255,0.12)";
-  ctx.fillStyle = noseStripeColor;
-  ctx.beginPath();
-  ctx.moveTo(cx, noseTipY + 2);
-  ctx.lineTo(cx - bodyW * 0.1, noseBaseY);
-  ctx.lineTo(cx + bodyW * 0.1, noseBaseY);
-  ctx.closePath();
-  ctx.fill();
-
-  // ── front wing ──────────────────────────────────────────────────────────────
-  ctx.fillStyle = roofColor;
-  ctx.beginPath();
-  ctx.roundRect(fwX, fwY, fwW, fwH, 2);
-  ctx.fill();
-
-  // Front wing cascade flaps (thin lines for detail)
-  ctx.strokeStyle = "rgba(255,255,255,0.18)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(fwX + fwW * 0.2, fwY);
-  ctx.lineTo(fwX + fwW * 0.2, fwY + fwH);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(fwX + fwW * 0.8, fwY);
-  ctx.lineTo(fwX + fwW * 0.8, fwY + fwH);
-  ctx.stroke();
-
-  // Front wing endplates
-  ctx.fillStyle = roofColor;
-  ctx.fillRect(fwX, fwY, 3, fwH + 5);
-  ctx.fillRect(fwX + fwW - 3, fwY, 3, fwH + 5);
-
-  // ── rear wing ───────────────────────────────────────────────────────────────
-  ctx.fillStyle = roofColor;
-  ctx.beginPath();
-  ctx.roundRect(rwX, rwY, rwW, rwH, 2);
-  ctx.fill();
-
-  // Rear wing DRS beam
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
-  ctx.beginPath();
-  ctx.roundRect(rwX + rwW * 0.1, rwY + rwH * 0.5, rwW * 0.8, rwH * 0.22, 1);
-  ctx.fill();
-
-  // Rear wing DRS endplates
-  ctx.fillStyle = roofColor;
-  ctx.fillRect(rwX, rwY - 3, 3, rwH + 6);
-  ctx.fillRect(rwX + rwW - 3, rwY - 3, 3, rwH + 6);
-
-  // ── cockpit (open top) ──────────────────────────────────────────────────────
-  ctx.fillStyle = roofColor;
-  ctx.beginPath();
-  ctx.ellipse(cpX, cpY, cpW / 2 + 3, cpH / 2 + 3, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(5,8,20,0.92)";
-  ctx.beginPath();
-  ctx.ellipse(cpX, cpY, cpW / 2, cpH / 2, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Helmet
-  ctx.fillStyle = "rgba(200,220,255,0.55)";
-  ctx.beginPath();
-  ctx.ellipse(cpX, cpY - cpH * 0.08, cpW * 0.28, cpH * 0.3, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── HALO device (thin curved bar above cockpit) ──────────────────────────────
-  if (isPlayer) {
-    ctx.strokeStyle = "rgba(180,255,160,0.7)";
-    ctx.lineWidth = 2;
-  } else {
-    ctx.strokeStyle = "rgba(200,200,220,0.5)";
-    ctx.lineWidth = 1.5;
-  }
-  // HALO: two arms meeting at a center post above the cockpit
-  const haloY = cpY - cpH * 0.15;
-  const haloArmSpread = cpW * 0.55;
-  const haloCenterY = cpY - cpH * 0.55;
-  ctx.beginPath();
-  ctx.moveTo(cpX - haloArmSpread, haloY);
-  ctx.quadraticCurveTo(
-    cpX - haloArmSpread * 0.3,
-    haloCenterY,
-    cpX,
-    haloCenterY - 2,
-  );
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(cpX + haloArmSpread, haloY);
-  ctx.quadraticCurveTo(
-    cpX + haloArmSpread * 0.3,
-    haloCenterY,
-    cpX,
-    haloCenterY - 2,
-  );
-  ctx.stroke();
-  // HALO center post
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(cpX, haloY + cpH * 0.05);
-  ctx.lineTo(cpX, haloCenterY - 2);
-  ctx.stroke();
-
-  // ── engine cover / airbox bump ───────────────────────────────────────────────
-  const airboxGrad = ctx.createLinearGradient(
-    cx - airboxW / 2,
-    airboxY,
-    cx + airboxW / 2,
-    airboxY,
-  );
-  if (isPlayer) {
-    airboxGrad.addColorStop(0, "rgba(0,200,0,0.0)");
-    airboxGrad.addColorStop(0.5, "rgba(80,255,80,0.25)");
-    airboxGrad.addColorStop(1, "rgba(0,200,0,0.0)");
-  } else {
-    airboxGrad.addColorStop(0, "rgba(255,255,255,0.0)");
-    airboxGrad.addColorStop(0.5, "rgba(255,255,255,0.12)");
-    airboxGrad.addColorStop(1, "rgba(255,255,255,0.0)");
-  }
-  ctx.fillStyle = airboxGrad;
-  ctx.beginPath();
-  ctx.ellipse(
-    cx,
-    airboxY + airboxH / 2,
-    airboxW / 2,
-    airboxH / 2,
-    0,
-    0,
-    Math.PI * 2,
-  );
-  ctx.fill();
-  // Airbox intake (dark oval at top of engine cover)
-  ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.beginPath();
-  ctx.ellipse(cx, airboxY, airboxW * 0.3, airboxH * 0.35, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── exhaust pipes at rear ────────────────────────────────────────────────────
-  const exhaustY = tail - h * 0.1;
-  const exhaustR = w * 0.025;
-  const exhaustOffsetX = bodyW * 0.28;
-  // Left exhaust
-  ctx.fillStyle = "#2a2a2a";
-  ctx.beginPath();
-  ctx.arc(cx - exhaustOffsetX, exhaustY, exhaustR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = isPlayer ? "rgba(255,160,0,0.7)" : "rgba(255,100,0,0.5)";
-  ctx.beginPath();
-  ctx.arc(cx - exhaustOffsetX, exhaustY, exhaustR * 0.55, 0, Math.PI * 2);
-  ctx.fill();
-  // Right exhaust
-  ctx.fillStyle = "#2a2a2a";
-  ctx.beginPath();
-  ctx.arc(cx + exhaustOffsetX, exhaustY, exhaustR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = isPlayer ? "rgba(255,160,0,0.7)" : "rgba(255,100,0,0.5)";
-  ctx.beginPath();
-  ctx.arc(cx + exhaustOffsetX, exhaustY, exhaustR * 0.55, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── racing stripe ───────────────────────────────────────────────────────────
-  const stripeColor = isPlayer ? "rgba(0,0,0,0.3)" : "rgba(255,255,255,0.18)";
-  ctx.fillStyle = stripeColor;
-  const stripeW = bodyW * 0.18;
-  ctx.fillRect(
-    cx - stripeW / 2,
-    noseBaseY + h * 0.04,
-    stripeW,
-    tail - noseBaseY - h * 0.16,
-  );
-
-  // ── body highlight ──────────────────────────────────────────────────────────
-  const grad = ctx.createLinearGradient(bodyX, 0, bodyX + bodyW, 0);
-  grad.addColorStop(0, "rgba(0,0,0,0.2)");
-  grad.addColorStop(0.3, "rgba(255,255,255,0.14)");
-  grad.addColorStop(0.7, "rgba(255,255,255,0.07)");
-  grad.addColorStop(1, "rgba(0,0,0,0.2)");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.roundRect(bodyX, noseBaseY, bodyW, tail - noseBaseY - h * 0.06, 4);
-  ctx.fill();
-
-  // ── wheels ──────────────────────────────────────────────────────────────────
-  const wheelColor = "#1a1830";
-  const rimColor = isPlayer ? "#3a5a3a" : "#555570";
-  const spokeCount = 5;
-
-  const wheelPositions: [number, number, boolean][] = [
-    [wheelLX, fwWheelY, true],
-    [wheelRX, fwWheelY, true],
-    [wheelLX, rwWheelY, false],
-    [wheelRX, rwWheelY, false],
+  // Positions
+  const posColors = [
+    "#ffd700",
+    "#c0c0c0",
+    "#cd7f32",
+    "rgba(255,255,255,0.8)",
+    "rgba(255,255,255,0.6)",
+    "rgba(255,255,255,0.6)",
   ];
 
-  for (const [wx, wy, isFront] of wheelPositions) {
-    // Tyre shadow
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.beginPath();
-    ctx.arc(wx + 1, wy + 1, wheelR, 0, Math.PI * 2);
-    ctx.fill();
+  state.sortedIdx.slice(0, 6).forEach((carIdx, pos) => {
+    const car = state.cars[carIdx];
+    const rowY = py + 90 + pos * 30;
+    const pts = F1_POINTS[pos];
 
-    // Tyre
-    ctx.fillStyle = wheelColor;
-    ctx.beginPath();
-    ctx.arc(wx, wy, wheelR, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Tyre tread arcs
-    ctx.strokeStyle = "rgba(80,80,100,0.7)";
-    ctx.lineWidth = 1;
-    const treadCount = 6;
-    for (let t = 0; t < treadCount; t++) {
-      const tAngle = (t / treadCount) * Math.PI * 2;
-      const tAngleEnd = tAngle + ((Math.PI * 2) / treadCount) * 0.6;
-      ctx.beginPath();
-      ctx.arc(wx, wy, wheelR * 0.88, tAngle, tAngleEnd);
-      ctx.stroke();
+    // Position number
+    ctx.textAlign = "left";
+    ctx.font = "bold 14px monospace";
+    ctx.fillStyle = posColors[pos];
+    if (pos < 3) {
+      ctx.shadowColor = posColors[pos];
+      ctx.shadowBlur = 8;
     }
-
-    // Rim
-    ctx.fillStyle = rimColor;
-    ctx.beginPath();
-    ctx.arc(wx, wy, wheelR * 0.56, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Spokes (5 spokes as lines from center)
-    const spokeColor = isPlayer
-      ? "rgba(100,255,100,0.65)"
-      : "rgba(180,180,210,0.6)";
-    ctx.strokeStyle = spokeColor;
-    ctx.lineWidth = isPlayer ? 1.5 : 1.2;
-    for (let s = 0; s < spokeCount; s++) {
-      const sAngle = (s / spokeCount) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(
-        wx + Math.cos(sAngle) * wheelR * 0.12,
-        wy + Math.sin(sAngle) * wheelR * 0.12,
-      );
-      ctx.lineTo(
-        wx + Math.cos(sAngle) * wheelR * 0.52,
-        wy + Math.sin(sAngle) * wheelR * 0.52,
-      );
-      ctx.stroke();
-    }
-
-    // Center hub
-    ctx.fillStyle = isPlayer ? "#39ff14" : "#888899";
-    ctx.beginPath();
-    ctx.arc(wx, wy, wheelR * 0.14, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Rim highlight
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    ctx.beginPath();
-    ctx.arc(
-      wx - wheelR * 0.15,
-      wy - wheelR * 0.15,
-      wheelR * 0.22,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-
-    // Brake duct detail on front wheels
-    if (isFront) {
-      ctx.strokeStyle = isPlayer
-        ? "rgba(100,255,100,0.4)"
-        : "rgba(200,200,220,0.3)";
-      ctx.lineWidth = 1;
-      // Small arc on outer face = brake duct scoop
-      ctx.beginPath();
-      ctx.arc(wx, wy, wheelR * 0.72, -Math.PI * 0.6, Math.PI * 0.6);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(wx, wy, wheelR * 0.82, -Math.PI * 0.5, Math.PI * 0.5);
-      ctx.stroke();
-    }
-  }
-
-  // ── suspension arms ─────────────────────────────────────────────────────────
-  const suspColor = isPlayer
-    ? "rgba(80,200,80,0.45)"
-    : "rgba(160,160,180,0.35)";
-  ctx.strokeStyle = suspColor;
-  ctx.lineWidth = 1;
-  // Front left suspension
-  ctx.beginPath();
-  ctx.moveTo(bodyX, noseBaseY + h * 0.06);
-  ctx.lineTo(wheelLX + wheelR * 0.5, fwWheelY);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(bodyX, noseBaseY + h * 0.1);
-  ctx.lineTo(wheelLX + wheelR * 0.5, fwWheelY);
-  ctx.stroke();
-  // Front right suspension
-  ctx.beginPath();
-  ctx.moveTo(bodyX + bodyW, noseBaseY + h * 0.06);
-  ctx.lineTo(wheelRX - wheelR * 0.5, fwWheelY);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(bodyX + bodyW, noseBaseY + h * 0.1);
-  ctx.lineTo(wheelRX - wheelR * 0.5, fwWheelY);
-  ctx.stroke();
-  // Rear left suspension
-  ctx.beginPath();
-  ctx.moveTo(bodyX, tail - h * 0.14);
-  ctx.lineTo(wheelLX + wheelR * 0.5, rwWheelY);
-  ctx.stroke();
-  // Rear right suspension
-  ctx.beginPath();
-  ctx.moveTo(bodyX + bodyW, tail - h * 0.14);
-  ctx.lineTo(wheelRX - wheelR * 0.5, rwWheelY);
-  ctx.stroke();
-
-  // ── player neon glow outline (final pass) ────────────────────────────────────
-  if (isPlayer) {
-    // Inner crisp glow line
-    ctx.shadowColor = "#39ff14";
-    ctx.shadowBlur = 14;
-    ctx.strokeStyle = "#39ff14";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.roundRect(
-      bodyX - 1,
-      noseBaseY - 1,
-      bodyW + 2,
-      tail - noseBaseY - h * 0.06 + 2,
-      4,
-    );
-    ctx.stroke();
-    // Nose cone glow
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.moveTo(cx, noseTipY);
-    ctx.lineTo(cx - bodyW * 0.48, noseBaseY);
-    ctx.lineTo(cx + bodyW * 0.48, noseBaseY);
-    ctx.closePath();
-    ctx.stroke();
+    ctx.fillText(`P${pos + 1}`, px + 20, rowY);
     ctx.shadowBlur = 0;
-  }
+
+    // Car name
+    ctx.font = car.isPlayer ? "bold 14px monospace" : "14px monospace";
+    ctx.fillStyle = car.isPlayer ? "#00ff80" : "rgba(255,255,255,0.85)";
+    if (car.isPlayer) {
+      ctx.shadowColor = "#00ff80";
+      ctx.shadowBlur = 6;
+    }
+    ctx.fillText(car.name, px + 60, rowY);
+    ctx.shadowBlur = 0;
+
+    // Points
+    ctx.textAlign = "right";
+    ctx.font = "bold 14px monospace";
+    ctx.fillStyle = posColors[pos];
+    ctx.fillText(`${pts} pts`, px + pw - 20, rowY);
+  });
+
+  // Player result highlight
+  const playerPosIdx = state.sortedIdx.findIndex((i) => i === 0);
+  const finalPts = F1_POINTS[playerPosIdx] || 0;
+  ctx.textAlign = "center";
+  ctx.font = "bold 14px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.fillText(
+    `YOUR SCORE: ${finalPts} championship pts`,
+    CANVAS_W / 2,
+    py + ph - 20,
+  );
 
   ctx.restore();
 }
 
-function renderFrame(ctx: CanvasRenderingContext2D, gd: GameData): void {
-  const { playerCar, obstacles, dashLines, invincible, invincibleTimer } = gd;
-
-  // Background — asphalt night
-  ctx.fillStyle = "#0a0d14";
-  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
-  // ── Crowd / audience in the off-road strips ──────────────────────────────
-  drawCrowd(ctx, gd.roadScrollY);
-
-  // Side curbs (off-road) — drawn on top of crowd, within curb zone only
-  const leftCurbX = ROAD_LEFT_X - 20;
-  const rightCurbX = ROAD_LEFT_X + ROAD_WIDTH;
-
-  // Curb stripes (animated)
-  const stripeH = 30;
-  const stripeCount = Math.ceil(CANVAS_HEIGHT / stripeH) + 2;
-  const stripeOffset = gd.roadScrollY % (stripeH * 2);
-  for (let i = -1; i < stripeCount; i++) {
-    const sy = i * stripeH * 2 + stripeOffset;
-    if (i % 2 === 0) {
-      ctx.fillStyle = "#e74c3c";
-    } else {
-      ctx.fillStyle = "#f5f5f5";
-    }
-    ctx.fillRect(leftCurbX, sy, 18, stripeH);
-    ctx.fillRect(rightCurbX + 2, sy, 18, stripeH);
-  }
-
-  // Road surface
-  ctx.fillStyle = "#1a1f2e";
-  ctx.fillRect(ROAD_LEFT_X, 0, ROAD_WIDTH, CANVAS_HEIGHT);
-
-  // Road edge lines
-  ctx.strokeStyle = "rgba(255,255,255,0.8)";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(ROAD_LEFT_X, 0);
-  ctx.lineTo(ROAD_LEFT_X, CANVAS_HEIGHT);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(ROAD_LEFT_X + ROAD_WIDTH, 0);
-  ctx.lineTo(ROAD_LEFT_X + ROAD_WIDTH, CANVAS_HEIGHT);
-  ctx.stroke();
-
-  // Lane dividers (dashed)
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2;
-  ctx.setLineDash([30, 20]);
-  for (let lane = 0; lane < LANE_COUNT - 1; lane++) {
-    const lx = ROAD_LEFT_X + (lane + 1) * LANE_WIDTH;
-    const laneLines = dashLines.filter((d) => d.lane === lane);
-    for (const line of laneLines) {
-      ctx.beginPath();
-      ctx.moveTo(lx, line.y);
-      ctx.lineTo(lx, line.y + 30);
-      ctx.stroke();
-    }
-  }
-  ctx.setLineDash([]);
-
-  // Draw obstacles
-  for (const obs of obstacles) {
-    drawF1Car(ctx, obs, 1);
-  }
-
-  // Draw player car (flicker when invincible)
-  const shouldFlicker = invincible && Math.floor(invincibleTimer / 8) % 2 === 0;
-  if (!shouldFlicker) {
-    drawF1Car(ctx, playerCar, 1);
-  } else {
-    drawF1Car(ctx, playerCar, 0.4);
-  }
-
-  // Vignette overlay
-  const vignette = ctx.createRadialGradient(
-    CANVAS_WIDTH / 2,
-    CANVAS_HEIGHT / 2,
-    CANVAS_HEIGHT * 0.2,
-    CANVAS_WIDTH / 2,
-    CANVAS_HEIGHT / 2,
-    CANVAS_HEIGHT * 0.75,
-  );
-  vignette.addColorStop(0, "rgba(0,0,0,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.45)");
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+// ── Draw background ───────────────────────────────────────────────────────────
+function drawBackground(ctx: CanvasRenderingContext2D) {
+  ctx.fillStyle = "#0d1f0d";
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 }
 
-export default function RoadRacerGame({
+// ── F1 Steering Wheel SVG component ──────────────────────────────────────────
+function SteeringWheelSVG({ rotation }: { rotation: number }) {
+  return (
+    <svg
+      width="120"
+      height="110"
+      viewBox="0 0 120 110"
+      style={{
+        transform: `rotate(${rotation}deg)`,
+        transition: "transform 0.05s ease-out",
+        filter: "drop-shadow(0 0 8px rgba(0,255,128,0.6))",
+      }}
+      aria-hidden="true"
+    >
+      {/* Outer ring - flat bottom F1 style */}
+      <path
+        d="M 20 65 A 42 42 0 1 1 100 65 L 100 72 Q 100 80 60 80 Q 20 80 20 72 Z"
+        fill="none"
+        stroke="#00ff80"
+        strokeWidth="7"
+        strokeLinejoin="round"
+      />
+      {/* Horizontal center bar (left grip) */}
+      <rect
+        x="14"
+        y="56"
+        width="28"
+        height="9"
+        rx="4"
+        fill="#00ff80"
+        opacity="0.9"
+      />
+      {/* Horizontal center bar (right grip) */}
+      <rect
+        x="78"
+        y="56"
+        width="28"
+        height="9"
+        rx="4"
+        fill="#00ff80"
+        opacity="0.9"
+      />
+      {/* Center hub */}
+      <circle
+        cx="60"
+        cy="60"
+        r="14"
+        fill="#0a1a0a"
+        stroke="#00ff80"
+        strokeWidth="3"
+      />
+      {/* Hub inner detail */}
+      <circle cx="60" cy="60" r="7" fill="#00ff80" opacity="0.3" />
+      {/* Spokes */}
+      <line
+        x1="60"
+        y1="46"
+        x2="60"
+        y2="20"
+        stroke="#00ff80"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+      <line
+        x1="46"
+        y1="60"
+        x2="18"
+        y2="60"
+        stroke="#00ff80"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+      <line
+        x1="74"
+        y1="60"
+        x2="102"
+        y2="60"
+        stroke="#00ff80"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+      {/* DRS / button indicators on wheel */}
+      <rect
+        x="30"
+        y="50"
+        width="10"
+        height="5"
+        rx="2"
+        fill="#ff4444"
+        opacity="0.8"
+      />
+      <rect
+        x="80"
+        y="50"
+        width="10"
+        height="5"
+        rx="2"
+        fill="#3399ff"
+        opacity="0.8"
+      />
+    </svg>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+interface Props {
+  onStateChange: (state: "idle" | "playing" | "gameover") => void;
+  onScoreChange: (score: number, speedLevel: number, lives: number) => void;
+  autoStart?: boolean;
+}
+
+export default function F1Game({
   onStateChange,
   onScoreChange,
-  autoStart = false,
-}: RoadRacerGameProps) {
+  autoStart,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const {
-    gameDataRef,
-    getGameData,
-    startGame,
-    moveLeft,
-    moveRight,
-    handleKeyDown,
-    handleKeyUp,
-    startLoop,
-    stopLoop,
-    setOnStateChange,
-    setOnScoreChange,
-  } = useRoadRacer();
+  const stateRef = useRef<RaceState>(createInitialState());
+  const keysRef = useRef<Set<string>>(new Set());
+  const rafRef = useRef<number>(0);
+  const goTimerRef = useRef<number>(0); // frames to show GO!
+  const finishCountRef = useRef({ val: 0 });
 
-  const leftPressedRef = useRef(false);
-  const rightPressedRef = useRef(false);
-  const touchRepeatRef = useRef<number>(0);
+  // Steering wheel state
+  const [wheelRotation, setWheelRotation] = useState(0);
+  const wheelDragRef = useRef<{
+    active: boolean;
+    startX: number;
+    pointerId: number;
+  } | null>(null);
 
-  const render = useCallback(() => {
+  const startCountdown = useCallback(() => {
+    const s = stateRef.current;
+    s.phase = "countdown";
+    s.countdown = COUNTDOWN_FRAMES;
+    goTimerRef.current = 0;
+    onStateChange("playing");
+  }, [onStateChange]);
+
+  useEffect(() => {
+    if (autoStart) {
+      startCountdown();
+    }
+  }, [autoStart, startCountdown]);
+
+  // Key handlers
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      keysRef.current.add(e.key);
+      if (
+        ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)
+      ) {
+        e.preventDefault();
+      }
+      if (e.key === "Enter" && stateRef.current.phase === "idle") {
+        startCountdown();
+      }
+    };
+    const up = (e: KeyboardEvent) => keysRef.current.delete(e.key);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [startCountdown]);
+
+  // Touch controls for mobile (canvas-level, kept for fallback)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let touchAccel = false;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      for (const touch of Array.from(e.touches)) {
+        const rect = canvas.getBoundingClientRect();
+        const y = touch.clientY - rect.top;
+        const relY = y / rect.height;
+        if (relY <= 0.7) {
+          touchAccel = true;
+        }
+      }
+      if (touchAccel) keysRef.current.add("ArrowUp");
+    };
+
+    const handleTouchEnd = () => {
+      touchAccel = false;
+      keysRef.current.delete("ArrowUp");
+    };
+
+    canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+    canvas.addEventListener("touchend", handleTouchEnd, { passive: false });
+    canvas.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener("touchstart", handleTouchStart);
+      canvas.removeEventListener("touchend", handleTouchEnd);
+      canvas.removeEventListener("touchcancel", handleTouchEnd);
+    };
+  }, []);
+
+  // ── Steering wheel pointer handlers ─────────────────────────────────────────
+  const handleWheelPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      wheelDragRef.current = {
+        active: true,
+        startX: e.clientX,
+        pointerId: e.pointerId,
+      };
+      if (stateRef.current.phase === "idle") {
+        startCountdown();
+      }
+    },
+    [startCountdown],
+  );
+
+  const handleWheelPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = wheelDragRef.current;
+      if (!drag?.active || e.pointerId !== drag.pointerId) return;
+
+      const deltaX = e.clientX - drag.startX;
+      const DEAD_ZONE = 8;
+      const MAX_DRAG = 60;
+
+      if (deltaX < -DEAD_ZONE) {
+        const intensity = Math.min(Math.abs(deltaX), MAX_DRAG) / MAX_DRAG;
+        const rot = -Math.round(intensity * 30);
+        setWheelRotation(rot);
+        keysRef.current.add("ArrowLeft");
+        keysRef.current.delete("ArrowRight");
+      } else if (deltaX > DEAD_ZONE) {
+        const intensity = Math.min(deltaX, MAX_DRAG) / MAX_DRAG;
+        const rot = Math.round(intensity * 30);
+        setWheelRotation(rot);
+        keysRef.current.add("ArrowRight");
+        keysRef.current.delete("ArrowLeft");
+      } else {
+        setWheelRotation(0);
+        keysRef.current.delete("ArrowLeft");
+        keysRef.current.delete("ArrowRight");
+      }
+    },
+    [],
+  );
+
+  const handleWheelPointerUp = useCallback(
+    (_e: React.PointerEvent<HTMLDivElement>) => {
+      wheelDragRef.current = null;
+      setWheelRotation(0);
+      keysRef.current.delete("ArrowLeft");
+      keysRef.current.delete("ArrowRight");
+    },
+    [],
+  );
+
+  // ── Accelerate / Brake button handlers ──────────────────────────────────────
+  const handleAccelDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      keysRef.current.add("ArrowUp");
+      if (stateRef.current.phase === "idle") startCountdown();
+    },
+    [startCountdown],
+  );
+
+  const handleAccelUp = useCallback(() => {
+    keysRef.current.delete("ArrowUp");
+  }, []);
+
+  const handleBrakeDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      keysRef.current.add("ArrowDown");
+    },
+    [],
+  );
+
+  const handleBrakeUp = useCallback(() => {
+    keysRef.current.delete("ArrowDown");
+  }, []);
+
+  // Game loop
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    renderFrame(ctx, getGameData());
-  }, [getGameData]);
 
-  const handleStartOrRestart = useCallback(() => {
-    startGame();
-    startLoop(render);
-  }, [startGame, startLoop, render]);
+    const loop = () => {
+      const s = stateRef.current;
+      const player = s.cars[0];
 
-  // Register callbacks
-  useEffect(() => {
-    setOnStateChange((state) => {
-      onStateChange(state);
-      if (state !== "playing") {
-        stopLoop();
+      // ── UPDATE ──
+      if (s.phase === "countdown") {
+        s.countdown -= 1;
+        if (s.countdown <= -40) {
+          // GO shown, now racing
+          s.phase = "racing";
+        }
+      } else if (s.phase === "racing") {
+        // Update AI cars
+        for (let i = 1; i < s.cars.length; i++) {
+          updateAI(s.cars[i], finishCountRef.current);
+        }
+        // Update player
+        updatePlayer(player, keysRef.current, finishCountRef.current);
+
+        // Sort positions
+        s.sortedIdx = sortPositions(s.cars);
+        const playerPos = s.sortedIdx.findIndex((i) => i === 0) + 1;
+        const currentLap = Math.min(player.laps + 1, TOTAL_LAPS);
+        const ptsForPos = F1_POINTS[playerPos - 1] || 0;
+        s.playerPos = playerPos;
+        s.currentLap = currentLap;
+
+        // Report to App
+        onScoreChange(ptsForPos, currentLap, playerPos);
+
+        // Check race over (player finishes or any car finishes all laps)
+        if (player.finished) {
+          const playerPosIdx = s.sortedIdx.findIndex((i) => i === 0);
+          s.finalPoints = F1_POINTS[playerPosIdx] || 0;
+          s.phase = "finished";
+          s.finishTimer = FINISH_DISPLAY_FRAMES;
+        }
+      } else if (s.phase === "finished") {
+        // Keep AI moving
+        for (let i = 1; i < s.cars.length; i++) {
+          updateAI(s.cars[i], finishCountRef.current);
+        }
+        s.finishTimer -= 1;
+        if (s.finishTimer <= 0) {
+          const playerPosIdx = s.sortedIdx.findIndex((i) => i === 0);
+          onScoreChange(s.finalPoints, TOTAL_LAPS, playerPosIdx + 1);
+          onStateChange("gameover");
+        }
       }
-    });
-    setOnScoreChange(onScoreChange);
-  }, [
-    onStateChange,
-    onScoreChange,
-    setOnStateChange,
-    setOnScoreChange,
-    stopLoop,
-  ]);
 
-  // Keyboard listeners
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+      // ── DRAW ──
+      const camX = player.x - CANVAS_W / 2;
+      const camY = player.y - CANVAS_H / 2;
+
+      drawBackground(ctx);
+      drawTrack(ctx, camX, camY);
+      drawStartLine(ctx, camX, camY);
+
+      // Draw cars (sorted back-to-front by Y for visual layering)
+      const drawOrder = [...s.cars].sort((a, b) => a.y - b.y);
+      for (const car of drawOrder) {
+        drawCar(ctx, car, car.x - camX, car.y - camY);
+      }
+
+      // HUD (fixed position, reset transforms)
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (s.phase === "racing" || s.phase === "finished") {
+        drawHUD(ctx, s, player.speed);
+        drawMinimap(ctx, s.cars);
+      }
+
+      if (s.phase === "countdown") {
+        drawHUD(ctx, s, 0);
+        drawMinimap(ctx, s.cars);
+        drawCountdown(ctx, s.countdown);
+      }
+
+      if (s.phase === "finished") {
+        const fadeIn = Math.min(
+          1,
+          (FINISH_DISPLAY_FRAMES - s.finishTimer) / 40,
+        );
+        drawFinishScreen(ctx, s, fadeIn);
+      }
+
+      if (s.phase === "idle") {
+        // Draw track and prompt
+        ctx.font = "bold 18px monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(0,255,128,0.9)";
+        ctx.shadowColor = "#00ff80";
+        ctx.shadowBlur = 12;
+        ctx.fillText("PRESS ENTER TO RACE", CANVAS_W / 2, CANVAS_H / 2);
+        ctx.shadowBlur = 0;
+      }
+
+      rafRef.current = requestAnimationFrame(loop);
     };
-  }, [handleKeyDown, handleKeyUp]);
 
-  // Initial render and optional auto-start — intentionally runs once on mount
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount only
-  useEffect(() => {
-    render();
-    if (autoStart) {
-      handleStartOrRestart();
-    }
-  }, []);
-
-  // Touch handlers for left/right buttons
-  const startTouchLeft = useCallback(() => {
-    leftPressedRef.current = true;
-    moveLeft();
-    touchRepeatRef.current = window.setInterval(() => {
-      if (leftPressedRef.current) moveLeft();
-    }, 150);
-  }, [moveLeft]);
-
-  const stopTouchLeft = useCallback(() => {
-    leftPressedRef.current = false;
-    clearInterval(touchRepeatRef.current);
-  }, []);
-
-  const startTouchRight = useCallback(() => {
-    rightPressedRef.current = true;
-    moveRight();
-    touchRepeatRef.current = window.setInterval(() => {
-      if (rightPressedRef.current) moveRight();
-    }, 150);
-  }, [moveRight]);
-
-  const stopTouchRight = useCallback(() => {
-    rightPressedRef.current = false;
-    clearInterval(touchRepeatRef.current);
-  }, []);
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [onStateChange, onScoreChange]);
 
   return (
-    <div className="flex flex-col items-center gap-0">
+    <div className="relative" data-ocid="game.canvas_target">
       <canvas
         ref={canvasRef}
-        data-ocid="game.canvas_target"
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
-        tabIndex={0}
-        className="block focus:outline-none"
+        width={CANVAS_W}
+        height={CANVAS_H}
         style={{
-          maxWidth: "100%",
-          maxHeight: "calc(100dvh - 160px)",
-          imageRendering: "pixelated",
-        }}
-        onClick={() => {
-          const gd = gameDataRef.current;
-          if (gd.state !== "playing") {
-            handleStartOrRestart();
-          }
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            const gd = gameDataRef.current;
-            if (gd.state !== "playing") handleStartOrRestart();
-          }
+          display: "block",
+          border: "1px solid rgba(0,255,128,0.15)",
+          borderRadius: 8,
+          boxShadow: "0 0 40px rgba(0,255,128,0.08), 0 0 80px rgba(0,0,0,0.8)",
+          touchAction: "none",
         }}
       />
 
-      {/* Touch controls */}
-      <div className="flex gap-4 mt-3 w-full max-w-[360px] px-4">
-        <button
-          type="button"
-          data-ocid="game.left_button"
-          className="touch-btn flex-1 h-16 text-4xl font-bold"
-          onPointerDown={(e) => {
-            e.preventDefault();
-            startTouchLeft();
+      {/* ── F1 Steering Controller Overlay ── */}
+      <div
+        className="absolute bottom-0 left-0 right-0 flex items-end justify-between"
+        style={{
+          padding: "12px 16px 16px",
+          pointerEvents: "none",
+          userSelect: "none",
+        }}
+      >
+        {/* Steering Wheel (left side) */}
+        <div
+          role="slider"
+          aria-label="Steering wheel"
+          aria-valuenow={wheelRotation}
+          aria-valuemin={-30}
+          aria-valuemax={30}
+          tabIndex={0}
+          data-ocid="game.canvas_target"
+          style={{
+            pointerEvents: "auto",
+            cursor: "grab",
+            touchAction: "none",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 4,
+            userSelect: "none",
+            WebkitUserSelect: "none",
           }}
-          onPointerUp={stopTouchLeft}
-          onPointerLeave={stopTouchLeft}
-          onPointerCancel={stopTouchLeft}
-          aria-label="Move left"
+          onPointerDown={handleWheelPointerDown}
+          onPointerMove={handleWheelPointerMove}
+          onPointerUp={handleWheelPointerUp}
+          onPointerCancel={handleWheelPointerUp}
         >
-          ←
-        </button>
-        <button
-          type="button"
-          data-ocid="game.right_button"
-          className="touch-btn flex-1 h-16 text-4xl font-bold"
-          onPointerDown={(e) => {
-            e.preventDefault();
-            startTouchRight();
+          {/* Wheel background plate */}
+          <div
+            style={{
+              background: "rgba(0,10,5,0.78)",
+              border: "1.5px solid rgba(0,255,128,0.35)",
+              borderRadius: "50%",
+              padding: 8,
+              backdropFilter: "blur(6px)",
+              boxShadow:
+                "0 0 20px rgba(0,255,128,0.2), inset 0 0 12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <SteeringWheelSVG rotation={wheelRotation} />
+          </div>
+          {/* Direction hint */}
+          <div
+            style={{
+              fontSize: 10,
+              fontFamily: "monospace",
+              color: "rgba(0,255,128,0.6)",
+              letterSpacing: 1,
+              textTransform: "uppercase",
+            }}
+          >
+            {wheelRotation < -5
+              ? "◀ LEFT"
+              : wheelRotation > 5
+                ? "RIGHT ▶"
+                : "STEER"}
+          </div>
+        </div>
+
+        {/* Right side: Accelerate + Brake buttons */}
+        <div
+          style={{
+            pointerEvents: "none",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 10,
           }}
-          onPointerUp={stopTouchRight}
-          onPointerLeave={stopTouchRight}
-          onPointerCancel={stopTouchRight}
-          aria-label="Move right"
         >
-          →
-        </button>
+          {/* Accelerate button */}
+          <button
+            type="button"
+            aria-label="Accelerate"
+            data-ocid="game.primary_button"
+            style={{
+              pointerEvents: "auto",
+              touchAction: "none",
+              width: 80,
+              height: 80,
+              borderRadius: "50%",
+              background:
+                "radial-gradient(circle at 35% 35%, rgba(0,255,128,0.35), rgba(0,80,40,0.8))",
+              border: "2.5px solid #00ff80",
+              boxShadow:
+                "0 0 20px rgba(0,255,128,0.5), 0 0 40px rgba(0,255,128,0.2), inset 0 0 16px rgba(0,255,128,0.1)",
+              color: "#00ff80",
+              fontSize: 13,
+              fontWeight: 700,
+              fontFamily: "monospace",
+              letterSpacing: 1,
+              cursor: "pointer",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
+              userSelect: "none",
+              WebkitUserSelect: "none",
+            }}
+            onPointerDown={handleAccelDown}
+            onPointerUp={handleAccelUp}
+            onPointerCancel={handleAccelUp}
+            onPointerLeave={handleAccelUp}
+          >
+            <span style={{ fontSize: 22, lineHeight: 1 }}>▲</span>
+            <span>GO</span>
+          </button>
+
+          {/* Brake button */}
+          <button
+            type="button"
+            aria-label="Brake"
+            data-ocid="game.secondary_button"
+            style={{
+              pointerEvents: "auto",
+              touchAction: "none",
+              width: 56,
+              height: 56,
+              borderRadius: "50%",
+              background:
+                "radial-gradient(circle at 35% 35%, rgba(255,60,60,0.35), rgba(100,0,0,0.8))",
+              border: "2px solid #ff3c3c",
+              boxShadow:
+                "0 0 14px rgba(255,60,60,0.45), 0 0 28px rgba(255,60,60,0.15), inset 0 0 10px rgba(255,60,60,0.1)",
+              color: "#ff6060",
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: "monospace",
+              letterSpacing: 1,
+              cursor: "pointer",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
+              userSelect: "none",
+              WebkitUserSelect: "none",
+            }}
+            onPointerDown={handleBrakeDown}
+            onPointerUp={handleBrakeUp}
+            onPointerCancel={handleBrakeUp}
+            onPointerLeave={handleBrakeUp}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>▼</span>
+            <span>BRAKE</span>
+          </button>
+        </div>
       </div>
     </div>
   );
 }
-
-export { CANVAS_WIDTH, CANVAS_HEIGHT };
