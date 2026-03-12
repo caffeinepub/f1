@@ -58,7 +58,7 @@ function seededRand(seed: number): number {
  * Left strip: x 0..ROAD_LEFT_X  (~60px)
  * Right strip: x ROAD_LEFT_X+ROAD_WIDTH..CANVAS_WIDTH  (~60px)
  */
-function drawCrowd(ctx: CanvasRenderingContext2D, scrollY: number): void {
+function drawCrowd(ctx: CanvasRenderingContext2D, _scrollY: number): void {
   ctx.save();
 
   const ROW_H = 14; // vertical spacing between crowd rows
@@ -69,7 +69,7 @@ function drawCrowd(ctx: CanvasRenderingContext2D, scrollY: number): void {
 
   // How many rows to cover the full canvas + 1 extra for seamless scroll
   const totalRows = Math.ceil(CANVAS_HEIGHT / ROW_H) + 2;
-  const scrollOffset = scrollY % (ROW_H * 2);
+  const scrollOffset = 0;
 
   // grandstand backdrop — slightly lighter dark tone to hint at tiers
   ctx.fillStyle = "#0d1520";
@@ -128,7 +128,7 @@ function drawCrowd(ctx: CanvasRenderingContext2D, scrollY: number): void {
       if (hasFlag) {
         const flagPair =
           FLAG_COLORS[Math.floor(seededRand(seed + 3) * FLAG_COLORS.length)];
-        const flutter = Math.sin(scrollY * 0.08 + seed * 0.5) * 1.5;
+        const flutter = 0;
         const stickX = px + 3;
         const stickTopY = rowY - HEAD_R * 2 - 8;
         // Stick
@@ -187,7 +187,7 @@ function drawCrowd(ctx: CanvasRenderingContext2D, scrollY: number): void {
       if (hasFlag) {
         const flagPair =
           FLAG_COLORS[Math.floor(seededRand(seed + 3) * FLAG_COLORS.length)];
-        const flutter = Math.sin(scrollY * 0.08 + seed * 0.5) * 1.5;
+        const flutter = 0;
         const stickX = px + 3;
         const stickTopY = rowY - HEAD_R * 2 - 8;
         ctx.strokeStyle = "rgba(200,200,200,0.6)";
@@ -220,15 +220,8 @@ function drawCrowd(ctx: CanvasRenderingContext2D, scrollY: number): void {
 }
 
 /**
- * Draws a top-down F1 car.
- * Coordinate system: Y increases downward.
- * The car travels DOWNWARD, so "front" (nose) is at the BOTTOM of the bounding box.
- *
- * Bounding box: car.x, car.y, car.width, car.height (same as before — collision unchanged).
- *
- * isPlayer: player car moves from bottom toward top of canvas (upward-facing front).
- *           Its front nose points UPWARD (toward smaller y).
- * obstacles: travel downward; their front nose points DOWNWARD (toward larger y).
+ * Draws a top-down F1 car facing upward (nose at top, tail at bottom).
+ * All cars — player and AI — face the same direction.
  */
 function drawF1Car(ctx: CanvasRenderingContext2D, car: Car, alpha = 1): void {
   ctx.save();
@@ -238,15 +231,8 @@ function drawF1Car(ctx: CanvasRenderingContext2D, car: Car, alpha = 1): void {
   const isPlayer = color === "#39ff14";
 
   const cx = x + w / 2;
-  const cy = y + h / 2;
 
-  if (!isPlayer) {
-    ctx.translate(cx, cy);
-    ctx.rotate(Math.PI);
-    ctx.translate(-cx, -cy);
-  }
-
-  // After transform: nose is always at y (top edge), tail at y+h (bottom edge).
+  // nose at top edge, tail at bottom edge — same for all cars
   const nose = y;
   const tail = y + h;
 

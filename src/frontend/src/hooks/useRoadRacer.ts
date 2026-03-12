@@ -184,7 +184,7 @@ export function useRoadRacer() {
 
   const spawnObstacle = useCallback(() => {
     const gd = gameDataRef.current;
-    // Pick random lane, avoid lane where player is if spawning many obstacles
+    // Spawn at the bottom of the screen, moving upward (same direction as player)
     const lane = Math.floor(Math.random() * LANE_COUNT);
     const colorPick =
       OBSTACLE_COLORS[Math.floor(Math.random() * OBSTACLE_COLORS.length)];
@@ -193,7 +193,7 @@ export function useRoadRacer() {
 
     gd.obstacles.push({
       x: getObstacleLaneX(lane),
-      y: -OBSTACLE_HEIGHT - 10,
+      y: CANVAS_HEIGHT + OBSTACLE_HEIGHT + 10,
       width: OBSTACLE_WIDTH,
       height: OBSTACLE_HEIGHT,
       color: colorPick.body,
@@ -267,10 +267,10 @@ export function useRoadRacer() {
       }
     }
 
-    // Update obstacles
+    // Update obstacles — move upward (same direction as player)
     const obstacleSpeed = currentSpeed * 1.3;
     gd.obstacles = gd.obstacles.filter((obs) => {
-      obs.y += obstacleSpeed;
+      obs.y -= obstacleSpeed;
       // Collision check
       if (!gd.invincible && checkCollision(gd.playerCar, obs)) {
         gd.lives--;
@@ -284,7 +284,8 @@ export function useRoadRacer() {
         }
         return false; // remove this obstacle on hit
       }
-      return obs.y < CANVAS_HEIGHT + OBSTACLE_HEIGHT + 10;
+      // Remove when off the top of the screen
+      return obs.y > -OBSTACLE_HEIGHT - 10;
     });
   }, [spawnObstacle, checkCollision]);
 
