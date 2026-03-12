@@ -1284,6 +1284,274 @@ function getDirectionHint(rotation: WheelRotation): string {
   return "STEER";
 }
 
+// ── Background Music Hook ────────────────────────────────────────────────────
+function useBackgroundMusic() {
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+  const engineOscRef = useRef<OscillatorNode | null>(null);
+  const beatIntervalRef = useRef<number>(0);
+  const [isMuted, setIsMuted] = useState(false);
+  const isPlayingRef = useRef(false);
+  const isMutedRef = useRef(false);
+
+  // Tyre screech nodes
+  const screechGainRef = useRef<GainNode | null>(null);
+  const screechSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const screechFilterRef = useRef<BiquadFilterNode | null>(null);
+
+  const getCtx = () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext();
+      const master = audioCtxRef.current.createGain();
+      master.gain.value = 0.18;
+      master.connect(audioCtxRef.current.destination);
+      masterGainRef.current = master;
+    }
+    return audioCtxRef.current;
+  };
+
+  const playBeat = (ctx: AudioContext, master: GainNode, time: number) => {
+    // Kick drum
+    const kick = ctx.createOscillator();
+    const kickGain = ctx.createGain();
+    kick.type = "sine";
+    kick.frequency.setValueAtTime(150, time);
+    kick.frequency.exponentialRampToValueAtTime(40, time + 0.12);
+    kickGain.gain.setValueAtTime(0.9, time);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
+    kick.connect(kickGain);
+    kickGain.connect(master);
+    kick.start(time);
+    kick.stop(time + 0.15);
+
+    // Hi-hat 1
+    const hihat1 = ctx.createOscillator();
+    const hhGain1 = ctx.createGain();
+    const hhFilter1 = ctx.createBiquadFilter();
+    hihat1.type = "square";
+    hihat1.frequency.value = 8000;
+    hhFilter1.type = "highpass";
+    hhFilter1.frequency.value = 7000;
+    hhGain1.gain.setValueAtTime(0.15, time + 0.125);
+    hhGain1.gain.exponentialRampToValueAtTime(0.001, time + 0.175);
+    hihat1.connect(hhFilter1);
+    hhFilter1.connect(hhGain1);
+    hhGain1.connect(master);
+    hihat1.start(time + 0.125);
+    hihat1.stop(time + 0.18);
+
+    // Hi-hat 2
+    const hihat2 = ctx.createOscillator();
+    const hhGain2 = ctx.createGain();
+    const hhFilter2 = ctx.createBiquadFilter();
+    hihat2.type = "square";
+    hihat2.frequency.value = 8000;
+    hhFilter2.type = "highpass";
+    hhFilter2.frequency.value = 7000;
+    hhGain2.gain.setValueAtTime(0.12, time + 0.25);
+    hhGain2.gain.exponentialRampToValueAtTime(0.001, time + 0.3);
+    hihat2.connect(hhFilter2);
+    hhFilter2.connect(hhGain2);
+    hhGain2.connect(master);
+    hihat2.start(time + 0.25);
+    hihat2.stop(time + 0.31);
+
+    // Snare
+    const snareBuffer = ctx.createBuffer(
+      1,
+      ctx.sampleRate * 0.1,
+      ctx.sampleRate,
+    );
+    const snareData = snareBuffer.getChannelData(0);
+    for (let i = 0; i < snareData.length; i++)
+      snareData[i] = Math.random() * 2 - 1;
+    const snare = ctx.createBufferSource();
+    const snareGain = ctx.createGain();
+    const snareFilter = ctx.createBiquadFilter();
+    snare.buffer = snareBuffer;
+    snareFilter.type = "bandpass";
+    snareFilter.frequency.value = 2500;
+    snareGain.gain.setValueAtTime(0.4, time + 0.25);
+    snareGain.gain.exponentialRampToValueAtTime(0.001, time + 0.35);
+    snare.connect(snareFilter);
+    snareFilter.connect(snareGain);
+    snareGain.connect(master);
+    snare.start(time + 0.25);
+
+    // Bass synth note
+    const bassNotes = [55, 55, 73.4, 65.4, 55, 55, 61.7, 49];
+    const beatIdx = Math.floor(time * 2) % bassNotes.length;
+    const bass = ctx.createOscillator();
+    const bassGain = ctx.createGain();
+    const bassFilter = ctx.createBiquadFilter();
+    bass.type = "sawtooth";
+    bass.frequency.value = bassNotes[beatIdx];
+    bassFilter.type = "lowpass";
+    bassFilter.frequency.value = 400;
+    bassFilter.Q.value = 2;
+    bassGain.gain.setValueAtTime(0.5, time);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, time + 0.45);
+    bass.connect(bassFilter);
+    bassFilter.connect(bassGain);
+    bassGain.connect(master);
+    bass.start(time);
+    bass.stop(time + 0.5);
+  };
+
+  const startEngine = (ctx: AudioContext, master: GainNode) => {
+    if (engineOscRef.current) return;
+    // Engine hum — layered oscillators
+    const engine1 = ctx.createOscillator();
+    const engine2 = ctx.createOscillator();
+    const engineGain = ctx.createGain();
+    const engineFilter = ctx.createBiquadFilter();
+    engine1.type = "sawtooth";
+    engine1.frequency.value = 85;
+    engine2.type = "sawtooth";
+    engine2.frequency.value = 170;
+    engineFilter.type = "lowpass";
+    engineFilter.frequency.value = 600;
+    engineFilter.Q.value = 3;
+    engineGain.gain.value = 0.22;
+    engine1.connect(engineFilter);
+    engine2.connect(engineFilter);
+    engineFilter.connect(engineGain);
+    engineGain.connect(master);
+    engine1.start();
+    engine2.start();
+    engineOscRef.current = engine1;
+    // slight detune for richness
+    engine2.detune.value = 8;
+  };
+
+  const stopEngine = () => {
+    if (engineOscRef.current) {
+      try {
+        engineOscRef.current.stop();
+      } catch (_) {}
+      engineOscRef.current = null;
+    }
+  };
+
+  const startMusic = () => {
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+    const ctx = getCtx();
+    if (!masterGainRef.current) return;
+    const master = masterGainRef.current;
+    if (ctx.state === "suspended") ctx.resume();
+
+    startEngine(ctx, master);
+
+    const BPM = 160;
+    const beatDur = 60 / BPM;
+    let nextBeat = ctx.currentTime + 0.05;
+
+    const scheduleBeat = () => {
+      if (!isPlayingRef.current) return;
+      const lookahead = 0.1;
+      const scheduleAhead = 0.2;
+      while (nextBeat < ctx.currentTime + scheduleAhead) {
+        if (!isMutedRef.current) {
+          playBeat(ctx, master, nextBeat);
+        }
+        nextBeat += beatDur;
+      }
+      beatIntervalRef.current = window.setTimeout(
+        scheduleBeat,
+        lookahead * 1000,
+      );
+    };
+    scheduleBeat();
+  };
+
+  const stopMusic = () => {
+    isPlayingRef.current = false;
+    clearTimeout(beatIntervalRef.current);
+    stopEngine();
+  };
+
+  const toggleMute = () => {
+    const newMuted = !isMutedRef.current;
+    isMutedRef.current = newMuted;
+    setIsMuted(newMuted);
+    if (masterGainRef.current) {
+      masterGainRef.current.gain.value = newMuted ? 0 : 0.18;
+    }
+  };
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cleanup only runs on unmount
+  useEffect(() => {
+    return () => {
+      stopMusic();
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    };
+  }, []);
+
+  const updateTyreScreech = (intensity: number) => {
+    // intensity: 0 = silent, 1 = max screech
+    if (isMutedRef.current || !audioCtxRef.current) {
+      // If muted or no ctx, fade out any existing screech
+      if (screechGainRef.current) {
+        screechGainRef.current.gain.setTargetAtTime(
+          0,
+          audioCtxRef.current?.currentTime ?? 0,
+          0.1,
+        );
+      }
+      return;
+    }
+    const ctx = getCtx();
+    const master = masterGainRef.current;
+    if (!master) return;
+
+    // Lazy-init screech nodes
+    if (!screechSourceRef.current) {
+      // White noise buffer (1 second, looped)
+      const bufferSize = ctx.sampleRate;
+      const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+      const source = ctx.createBufferSource();
+      source.buffer = noiseBuffer;
+      source.loop = true;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 1800;
+      filter.Q.value = 3.5;
+
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(master);
+      source.start();
+
+      screechSourceRef.current = source;
+      screechFilterRef.current = filter;
+      screechGainRef.current = gain;
+    }
+
+    const targetGain = intensity * 0.22; // subtle under music
+    const targetFreq = 1400 + intensity * 1200; // pitch shifts up with speed
+    const now = ctx.currentTime;
+    screechGainRef.current!.gain.setTargetAtTime(
+      targetGain,
+      now,
+      intensity > 0.05 ? 0.06 : 0.15,
+    );
+    screechFilterRef.current!.frequency.setTargetAtTime(targetFreq, now, 0.08);
+  };
+
+  return { startMusic, stopMusic, toggleMute, isMuted, updateTyreScreech };
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 interface Props {
   onStateChange: (state: "idle" | "playing" | "gameover") => void;
@@ -1302,6 +1570,10 @@ export default function F1Game({
   const rafRef = useRef<number>(0);
   const goTimerRef = useRef<number>(0); // frames to show GO!
   const finishCountRef = useRef({ val: 0 });
+
+  // Background music
+  const { startMusic, stopMusic, toggleMute, isMuted, updateTyreScreech } =
+    useBackgroundMusic();
 
   // Boost effect refs
   const boostTimerRef = useRef<number>(0);
@@ -1327,7 +1599,8 @@ export default function F1Game({
     s.countdown = COUNTDOWN_FRAMES;
     goTimerRef.current = 0;
     onStateChange("playing");
-  }, [onStateChange]);
+    startMusic();
+  }, [onStateChange, startMusic]);
 
   useEffect(() => {
     if (autoStart) {
@@ -1485,6 +1758,7 @@ export default function F1Game({
   );
 
   // Game loop
+  // biome-ignore lint/correctness/useExhaustiveDependencies: stopMusic is stable
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1509,6 +1783,25 @@ export default function F1Game({
         }
         // Update player
         updatePlayer(player, keysRef.current, finishCountRef.current);
+
+        // Tyre screech: triggered by steering/braking at speed
+        {
+          const spd = Math.abs(player.speed);
+          const maxSpd = player.maxSpeed || 6;
+          const speedFactor = Math.min(spd / maxSpd, 1);
+          const isTurning =
+            keysRef.current.has("ArrowLeft") ||
+            keysRef.current.has("ArrowRight");
+          const isBraking = keysRef.current.has("ArrowDown");
+          let screechIntensity = 0;
+          if (speedFactor > 0.3) {
+            if (isTurning)
+              screechIntensity = Math.max(screechIntensity, speedFactor * 0.9);
+            if (isBraking)
+              screechIntensity = Math.max(screechIntensity, speedFactor * 0.7);
+          }
+          updateTyreScreech(screechIntensity);
+        }
 
         // Sort positions
         s.sortedIdx = sortPositions(s.cars);
@@ -1554,6 +1847,7 @@ export default function F1Game({
           const playerPosIdx = s.sortedIdx.findIndex((i) => i === 0);
           onScoreChange(s.finalPoints, TOTAL_LAPS, playerPosIdx + 1);
           onStateChange("gameover");
+          stopMusic();
         }
       }
 
@@ -1612,7 +1906,7 @@ export default function F1Game({
 
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [onStateChange, onScoreChange]);
+  }, [onStateChange, onScoreChange, stopMusic]);
 
   const directionHint = getDirectionHint(wheelRotation);
 
@@ -1640,6 +1934,36 @@ export default function F1Game({
           touchAction: "none",
         }}
       />
+
+      {/* Mute/Unmute Button */}
+      <button
+        type="button"
+        onClick={toggleMute}
+        data-ocid="game.toggle"
+        aria-label={isMuted ? "Unmute music" : "Mute music"}
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          background: "rgba(0,10,5,0.75)",
+          border: "1px solid rgba(0,255,128,0.35)",
+          borderRadius: "50%",
+          width: 36,
+          height: 36,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          fontSize: 18,
+          backdropFilter: "blur(4px)",
+          boxShadow: "0 0 10px rgba(0,255,128,0.15)",
+          color: "#fff",
+          zIndex: 20,
+          transition: "border-color 0.2s, box-shadow 0.2s",
+        }}
+      >
+        {isMuted ? "🔇" : "🔊"}
+      </button>
 
       {/* ── F1 Steering Controller Overlay ── */}
       <div
