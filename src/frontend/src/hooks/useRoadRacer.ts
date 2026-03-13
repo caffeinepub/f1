@@ -35,35 +35,35 @@ export interface RaceState {
 }
 
 export const TOTAL_LAPS = 3;
-export const TRACK_WIDTH = 280;
+export const TRACK_WIDTH = 430;
 export const CANVAS_W = 640;
 export const CANVAS_H = 800;
 export const F1_POINTS = [25, 18, 15, 12, 10, 8];
 
-// Waypoints scaled 2x for a much larger track
+// Waypoints scaled 3x — smaller track for tighter, more challenging racing
 export const WAYPOINTS: Point[] = [
-  { x: 2560, y: 320 },
-  { x: 3360, y: 320 },
-  { x: 4096, y: 448 },
-  { x: 4576, y: 896 },
-  { x: 4736, y: 1472 },
-  { x: 4672, y: 2048 },
-  { x: 4416, y: 2560 },
-  { x: 3840, y: 2880 },
-  { x: 3200, y: 3040 },
-  { x: 2720, y: 3008 },
-  { x: 2432, y: 2848 },
-  { x: 2240, y: 3104 },
-  { x: 1856, y: 3232 },
-  { x: 1280, y: 3264 },
-  { x: 704, y: 3136 },
-  { x: 384, y: 2720 },
-  { x: 320, y: 2112 },
-  { x: 384, y: 1472 },
-  { x: 640, y: 928 },
-  { x: 1152, y: 560 },
-  { x: 1824, y: 352 },
-  { x: 2176, y: 304 },
+  { x: 3840, y: 480 },
+  { x: 5040, y: 480 },
+  { x: 6144, y: 672 },
+  { x: 6864, y: 1344 },
+  { x: 7104, y: 2208 },
+  { x: 7008, y: 3072 },
+  { x: 6624, y: 3840 },
+  { x: 5760, y: 4320 },
+  { x: 4800, y: 4560 },
+  { x: 4080, y: 4512 },
+  { x: 3648, y: 4272 },
+  { x: 3360, y: 4656 },
+  { x: 2784, y: 4848 },
+  { x: 1920, y: 4896 },
+  { x: 1056, y: 4704 },
+  { x: 576, y: 4080 },
+  { x: 480, y: 3168 },
+  { x: 576, y: 2208 },
+  { x: 960, y: 1392 },
+  { x: 1728, y: 840 },
+  { x: 2736, y: 528 },
+  { x: 3264, y: 456 },
 ];
 
 export const AI_TEAM_DATA = [
@@ -74,33 +74,33 @@ export const AI_TEAM_DATA = [
   { name: "SAI", color: "#005AFF", glowColor: "#4d8cff" },
 ];
 
-// Stage 2 waypoints — more complex circuit with hairpins, chicanes, and S-curves
+// Stage 2 waypoints — more complex circuit with hairpins, chicanes, and S-curves (3x scale)
 export const WAYPOINTS_STAGE2: Point[] = [
-  { x: 2400, y: 300 }, // 0 start/finish
-  { x: 3200, y: 300 }, // 1 long straight
-  { x: 4000, y: 300 }, // 2 long straight continues
-  { x: 4500, y: 500 }, // 3 right curve entry
-  { x: 4700, y: 900 }, // 4 hairpin approach
-  { x: 4700, y: 1300 }, // 5 hairpin
-  { x: 4500, y: 1700 }, // 6 hairpin exit
-  { x: 4000, y: 1900 }, // 7 chicane S entry
-  { x: 3600, y: 2000 }, // 8 chicane left
-  { x: 3200, y: 1900 }, // 9 chicane right
-  { x: 2800, y: 2100 }, // 10
-  { x: 2400, y: 2400 }, // 11
-  { x: 2000, y: 2700 }, // 12 sweeping left
-  { x: 1400, y: 2900 }, // 13
-  { x: 800, y: 3000 }, // 14
-  { x: 300, y: 2800 }, // 15 left hairpin approach
-  { x: 200, y: 2400 }, // 16 left hairpin
-  { x: 300, y: 2000 }, // 17 hairpin exit
-  { x: 500, y: 1600 }, // 18
-  { x: 400, y: 1200 }, // 19 tight chicane
-  { x: 600, y: 900 }, // 20 chicane exit
-  { x: 400, y: 600 }, // 21 tight left
-  { x: 600, y: 350 }, // 22 approach finish
-  { x: 1200, y: 280 }, // 23
-  { x: 1800, y: 280 }, // 24
-  { x: 2100, y: 290 }, // 25
-  { x: 2250, y: 295 }, // 26
+  { x: 3600, y: 450 },
+  { x: 4800, y: 450 },
+  { x: 6000, y: 450 },
+  { x: 6750, y: 750 },
+  { x: 7050, y: 1350 },
+  { x: 7050, y: 1950 },
+  { x: 6750, y: 2550 },
+  { x: 6000, y: 2850 },
+  { x: 5400, y: 3000 },
+  { x: 4800, y: 2850 },
+  { x: 4200, y: 3150 },
+  { x: 3600, y: 3600 },
+  { x: 3000, y: 4050 },
+  { x: 2100, y: 4350 },
+  { x: 1200, y: 4500 },
+  { x: 450, y: 4200 },
+  { x: 300, y: 3600 },
+  { x: 450, y: 3000 },
+  { x: 750, y: 2400 },
+  { x: 600, y: 1800 },
+  { x: 900, y: 1350 },
+  { x: 600, y: 900 },
+  { x: 900, y: 525 },
+  { x: 1800, y: 420 },
+  { x: 2700, y: 420 },
+  { x: 3150, y: 435 },
+  { x: 3375, y: 443 },
 ];

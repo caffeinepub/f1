@@ -20,7 +20,7 @@ let N = _WP.length;
 const HALF_TRACK = TRACK_WIDTH / 2;
 const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
 const FINISH_DISPLAY_FRAMES = 120; // 2 seconds
-const PLAYER_MAX_SPEED = 9; // same for Stage 1 and Stage 2
+const PLAYER_MAX_SPEED = 6.8; // same for Stage 1 and Stage 2
 
 // Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
 const GRID_POSITIONS: Point[] = [
