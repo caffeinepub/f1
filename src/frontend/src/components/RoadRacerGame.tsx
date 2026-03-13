@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ScoreEntry } from "../backend.d";
 import {
   AI_TEAM_DATA,
   CANVAS_H,
@@ -24,14 +25,14 @@ const PLAYER_MAX_SPEED = 6.8; // same for Stage 1 and Stage 2
 
 // Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
 const GRID_POSITIONS: Point[] = [
-  { x: 2464, y: 288 },
-  { x: 2464, y: 352 },
-  { x: 2240, y: 288 },
-  { x: 2240, y: 352 },
-  { x: 2016, y: 288 },
-  { x: 2016, y: 352 },
+  { x: 3680, y: 456 },
+  { x: 3680, y: 500 },
+  { x: 3520, y: 454 },
+  { x: 3520, y: 498 },
+  { x: 3360, y: 452 },
+  { x: 3360, y: 496 },
 ];
-const START_HEADING = Math.atan2(320 - 304, 2560 - 2176); // toward WP[0] from WP[21]
+const START_HEADING = Math.atan2(480 - 456, 3840 - 3680); // toward WP[0] from grid
 
 function createInitialState(): RaceState {
   const player: CarData = {
@@ -100,11 +101,13 @@ function advanceWaypoint(car: CarData, finishCount: { val: number }) {
     }
     car.targetWP = (car.targetWP + 1) % N;
   }
-  if (car.targetWP >= Math.floor(N / 2)) {
+  // Use physical distance from finish line to determine if car has gone far enough
+  // to earn the next lap credit. More reliable than waypoint-index approach.
+  const fdx = car.x - _WP[0].x;
+  const fdy = car.y - _WP[0].y;
+  const distFromFinish = Math.sqrt(fdx * fdx + fdy * fdy);
+  if (!car.lapReady && distFromFinish > 2000) {
     car.lapReady = true;
-  } else if (car.targetWP > 0) {
-    // Reset lapReady in the first half of the track (prevents any edge-case double counting)
-    car.lapReady = false;
   }
 }
 
@@ -1648,13 +1651,29 @@ function useBackgroundMusic() {
     stopEngine();
   };
 
+  const musicVolumeRef = useRef<number>(0.18);
+  const sfxVolumeRef = useRef<number>(1.0);
+
   const toggleMute = () => {
     const newMuted = !isMutedRef.current;
     isMutedRef.current = newMuted;
     setIsMuted(newMuted);
     if (masterGainRef.current) {
-      masterGainRef.current.gain.value = newMuted ? 0 : 0.18;
+      masterGainRef.current.gain.value = newMuted ? 0 : musicVolumeRef.current;
     }
+  };
+
+  const setMusicVolume = (vol: number) => {
+    // vol: 0-1
+    musicVolumeRef.current = vol * 0.18;
+    if (masterGainRef.current && !isMutedRef.current) {
+      masterGainRef.current.gain.value = musicVolumeRef.current;
+    }
+  };
+
+  const setSfxVolume = (vol: number) => {
+    // vol: 0-1
+    sfxVolumeRef.current = vol;
   };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: cleanup only runs on unmount
@@ -1715,7 +1734,7 @@ function useBackgroundMusic() {
       screechGainRef.current = gain;
     }
 
-    const targetGain = intensity * 0.22; // subtle under music
+    const targetGain = intensity * 0.22 * sfxVolumeRef.current; // subtle under music
     const targetFreq = 1400 + intensity * 1200; // pitch shifts up with speed
     const now = ctx.currentTime;
     screechGainRef.current!.gain.setTargetAtTime(
@@ -1726,7 +1745,15 @@ function useBackgroundMusic() {
     screechFilterRef.current!.frequency.setTargetAtTime(targetFreq, now, 0.08);
   };
 
-  return { startMusic, stopMusic, toggleMute, isMuted, updateTyreScreech };
+  return {
+    startMusic,
+    stopMusic,
+    toggleMute,
+    isMuted,
+    updateTyreScreech,
+    setMusicVolume,
+    setSfxVolume,
+  };
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -1735,6 +1762,9 @@ interface Props {
   onScoreChange: (score: number, speedLevel: number, lives: number) => void;
   autoStart?: boolean;
   stage?: number;
+  leaderboard?: ScoreEntry[];
+  personalBest?: ScoreEntry | null;
+  lbLoading?: boolean;
 }
 
 export default function F1Game({
@@ -1742,6 +1772,9 @@ export default function F1Game({
   onScoreChange,
   autoStart,
   stage = 1,
+  leaderboard = [],
+  personalBest = null,
+  lbLoading = false,
 }: Props) {
   // Update module-level waypoints based on stage
   _WP = stage === 2 ? WAYPOINTS_STAGE2 : WAYPOINTS;
@@ -1758,8 +1791,54 @@ export default function F1Game({
   const prevLapsRef = useRef<number>(0); // previous player lap count to detect increments
 
   // Background music
-  const { startMusic, stopMusic, toggleMute, isMuted, updateTyreScreech } =
-    useBackgroundMusic();
+  const {
+    startMusic,
+    stopMusic,
+    toggleMute,
+    isMuted,
+    updateTyreScreech,
+    setMusicVolume,
+    setSfxVolume,
+  } = useBackgroundMusic();
+
+  // Pause state
+  const isPausedRef = useRef(false);
+  const [isPaused, setIsPaused] = useState(false);
+
+  // Settings state (persisted in localStorage)
+  const [showSettings, setShowSettings] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [settings, setSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem("f1_game_settings");
+      if (saved)
+        return JSON.parse(saved) as {
+          musicVol: number;
+          sfxVol: number;
+          showFps: boolean;
+        };
+    } catch {}
+    return { musicVol: 80, sfxVol: 80, showFps: false };
+  });
+
+  // Apply settings on mount and on change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setMusicVolume/setSfxVolume are stable
+  useEffect(() => {
+    setMusicVolume(settings.musicVol / 100);
+    setSfxVolume(settings.sfxVol / 100);
+    localStorage.setItem("f1_game_settings", JSON.stringify(settings));
+  }, [settings]);
+
+  const updateSettings = (
+    patch: Partial<{ musicVol: number; sfxVol: number; showFps: boolean }>,
+  ) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+  };
+
+  // FPS tracking
+  const fpsRef = useRef<number>(60);
+  const _lastFrameTimeRef = useRef<number>(0);
+  const [fpsDisplay, setFpsDisplay] = useState(60);
 
   // Boost effect refs
   const boostTimerRef = useRef<number>(0);
@@ -1807,6 +1886,14 @@ export default function F1Game({
       }
       if (e.key === "Enter" && stateRef.current.phase === "idle") {
         startCountdown();
+      }
+      if (
+        (e.key === "Escape" || e.key === "p" || e.key === "P") &&
+        stateRef.current.phase === "racing"
+      ) {
+        const newPaused = !isPausedRef.current;
+        isPausedRef.current = newPaused;
+        setIsPaused(newPaused);
       }
     };
     const up = (e: KeyboardEvent) => keysRef.current.delete(e.key);
@@ -1954,6 +2041,14 @@ export default function F1Game({
   );
 
   // Game loop
+  const togglePause = useCallback(() => {
+    const s = stateRef.current;
+    if (s.phase !== "racing") return; // only pause during active race
+    const newPaused = !isPausedRef.current;
+    isPausedRef.current = newPaused;
+    setIsPaused(newPaused);
+  }, []);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: stopMusic is stable
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1961,7 +2056,12 @@ export default function F1Game({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const loop = () => {
+    const loop = (timestamp: number) => {
+      // If paused, skip all updates but keep requesting frames
+      if (isPausedRef.current) {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
       const s = stateRef.current;
       const player = s.cars[0];
 
@@ -2116,6 +2216,11 @@ export default function F1Game({
         ctx.shadowBlur = 0;
       }
 
+      // Update FPS display every ~30 frames
+      if (Math.round(timestamp / 500) !== Math.round((timestamp - 16) / 500)) {
+        setFpsDisplay(fpsRef.current);
+      }
+
       rafRef.current = requestAnimationFrame(loop);
     };
 
@@ -2150,35 +2255,488 @@ export default function F1Game({
         }}
       />
 
-      {/* Mute/Unmute Button */}
-      <button
-        type="button"
-        onClick={toggleMute}
-        data-ocid="game.toggle"
-        aria-label={isMuted ? "Unmute music" : "Mute music"}
+      {/* Top-right controls */}
+      <div
         style={{
           position: "absolute",
           top: 8,
           right: 8,
-          background: "rgba(0,10,5,0.75)",
-          border: "1px solid rgba(0,255,128,0.35)",
-          borderRadius: "50%",
-          width: 36,
-          height: 36,
           display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "pointer",
-          fontSize: 18,
-          backdropFilter: "blur(4px)",
-          boxShadow: "0 0 10px rgba(0,255,128,0.15)",
-          color: "#fff",
+          gap: 6,
           zIndex: 20,
-          transition: "border-color 0.2s, box-shadow 0.2s",
         }}
       >
-        {isMuted ? "🔇" : "🔊"}
-      </button>
+        {/* Settings Button */}
+        <button
+          type="button"
+          onClick={() => setShowSettings(true)}
+          data-ocid="game.settings_button"
+          aria-label="Open settings"
+          style={{
+            background: "rgba(0,10,5,0.75)",
+            border: "1px solid rgba(0,255,128,0.35)",
+            borderRadius: "50%",
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: 18,
+            backdropFilter: "blur(4px)",
+            boxShadow: "0 0 10px rgba(0,255,128,0.15)",
+            color: "#fff",
+            transition: "border-color 0.2s, box-shadow 0.2s",
+          }}
+        >
+          ⚙️
+        </button>
+
+        {/* Mute/Unmute Button */}
+        <button
+          type="button"
+          onClick={toggleMute}
+          data-ocid="game.toggle"
+          aria-label={isMuted ? "Unmute music" : "Mute music"}
+          style={{
+            background: "rgba(0,10,5,0.75)",
+            border: "1px solid rgba(0,255,128,0.35)",
+            borderRadius: "50%",
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: 18,
+            backdropFilter: "blur(4px)",
+            boxShadow: "0 0 10px rgba(0,255,128,0.15)",
+            color: "#fff",
+            transition: "border-color 0.2s, box-shadow 0.2s",
+          }}
+        >
+          {isMuted ? "🔇" : "🔊"}
+        </button>
+      </div>
+
+      {/* Pause Button (only during racing) */}
+      {stateRef.current.phase === "racing" && (
+        <button
+          type="button"
+          onTouchStart={(e) => {
+            e.preventDefault();
+            togglePause();
+          }}
+          onClick={togglePause}
+          data-ocid="game.pause_button"
+          aria-label={isPaused ? "Resume game" : "Pause game"}
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            background: "rgba(0,10,5,0.75)",
+            border: `1px solid ${isPaused ? "rgba(255,200,0,0.7)" : "rgba(0,255,128,0.35)"}`,
+            borderRadius: "50%",
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: 18,
+            backdropFilter: "blur(4px)",
+            boxShadow: `0 0 10px ${isPaused ? "rgba(255,200,0,0.3)" : "rgba(0,255,128,0.15)"}`,
+            color: "#fff",
+            zIndex: 20,
+            transition: "border-color 0.2s, box-shadow 0.2s",
+          }}
+        >
+          {isPaused ? "▶" : "⏸"}
+        </button>
+      )}
+
+      {/* FPS Counter */}
+      {settings.showFps && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 200,
+            right: 8,
+            background: "rgba(0,0,0,0.6)",
+            color:
+              fpsDisplay >= 55
+                ? "#00ff80"
+                : fpsDisplay >= 30
+                  ? "#ffdd00"
+                  : "#ff4444",
+            fontFamily: "monospace",
+            fontSize: 11,
+            padding: "2px 6px",
+            borderRadius: 4,
+            zIndex: 20,
+            pointerEvents: "none",
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          {fpsDisplay} FPS
+        </div>
+      )}
+
+      {/* Pause Overlay */}
+      {isPaused && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,5,2,0.82)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 24,
+            zIndex: 30,
+            borderRadius: 8,
+          }}
+        >
+          {/* PAUSED title */}
+          <div
+            style={{
+              fontFamily: "monospace",
+              fontSize: 52,
+              fontWeight: 900,
+              color: "#ffd700",
+              textShadow:
+                "0 0 30px rgba(255,215,0,0.8), 0 0 60px rgba(255,215,0,0.4)",
+              letterSpacing: 8,
+            }}
+          >
+            ⏸ PAUSED
+          </div>
+          <div
+            style={{
+              fontFamily: "monospace",
+              fontSize: 13,
+              color: "rgba(0,255,128,0.5)",
+              letterSpacing: 2,
+            }}
+          >
+            ESC / P to resume
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginTop: 8,
+              alignItems: "center",
+            }}
+          >
+            <div style={{ display: "flex", gap: 16 }}>
+              <button
+                type="button"
+                onTouchStart={(e) => {
+                  e.preventDefault();
+                  togglePause();
+                }}
+                onClick={togglePause}
+                style={{
+                  background: "rgba(0,255,128,0.12)",
+                  border: "1.5px solid rgba(0,255,128,0.7)",
+                  borderRadius: 8,
+                  color: "#00ff80",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                  fontSize: 16,
+                  padding: "10px 32px",
+                  cursor: "pointer",
+                  letterSpacing: 2,
+                  boxShadow: "0 0 20px rgba(0,255,128,0.2)",
+                  transition: "background 0.2s, box-shadow 0.2s",
+                }}
+              >
+                ▶ RESUME
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  isPausedRef.current = false;
+                  setIsPaused(false);
+                  stateRef.current.phase = "idle";
+                  stateRef.current = createInitialState();
+                  finishCountRef.current = { val: 0 };
+                  prevLapsRef.current = 0;
+                  lapFlashRef.current = 0;
+                  boostTimerRef.current = 0;
+                  prevSortedIdxRef.current = [0, 1, 2, 3, 4, 5];
+                  stopMusic();
+                  onStateChange("idle");
+                }}
+                style={{
+                  background: "rgba(255,60,60,0.1)",
+                  border: "1.5px solid rgba(255,60,60,0.5)",
+                  borderRadius: 8,
+                  color: "#ff6060",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                  fontSize: 16,
+                  padding: "10px 32px",
+                  cursor: "pointer",
+                  letterSpacing: 2,
+                  transition: "background 0.2s",
+                }}
+              >
+                ✕ QUIT
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLeaderboard(true)}
+              style={{
+                background: "rgba(255,215,0,0.08)",
+                border: "1.5px solid rgba(255,215,0,0.4)",
+                borderRadius: 8,
+                color: "#ffd700",
+                fontFamily: "monospace",
+                fontWeight: 700,
+                fontSize: 14,
+                padding: "8px 28px",
+                cursor: "pointer",
+                letterSpacing: 2,
+                transition: "background 0.2s",
+              }}
+            >
+              🏆 LEADERBOARD
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div
+          data-ocid="settings.dialog"
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,5,2,0.88)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 40,
+            borderRadius: 8,
+          }}
+        >
+          <div
+            style={{
+              background: "rgba(5,18,10,0.95)",
+              border: "1.5px solid rgba(0,255,128,0.4)",
+              borderRadius: 16,
+              padding: "32px 36px",
+              minWidth: 320,
+              maxWidth: 400,
+              boxShadow:
+                "0 0 60px rgba(0,255,128,0.12), 0 0 120px rgba(0,0,0,0.8)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 24,
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 22,
+                  fontWeight: 900,
+                  color: "#00ff80",
+                  letterSpacing: 3,
+                  textShadow: "0 0 16px rgba(0,255,128,0.5)",
+                }}
+              >
+                ⚙ SETTINGS
+              </div>
+              <button
+                type="button"
+                data-ocid="settings.close_button"
+                onClick={() => setShowSettings(false)}
+                aria-label="Close settings"
+                style={{
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  borderRadius: "50%",
+                  width: 30,
+                  height: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  color: "rgba(255,255,255,0.6)",
+                  fontSize: 16,
+                  transition: "border-color 0.2s, color 0.2s",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Music Volume */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <label
+                htmlFor="music-vol"
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "rgba(0,255,128,0.8)",
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                }}
+              >
+                🎵 Music Volume — {settings.musicVol}%
+              </label>
+              <input
+                id="music-vol"
+                type="range"
+                min={0}
+                max={100}
+                value={settings.musicVol}
+                data-ocid="settings.music_volume.input"
+                onChange={(e) =>
+                  updateSettings({ musicVol: Number(e.target.value) })
+                }
+                style={{
+                  width: "100%",
+                  accentColor: "#00ff80",
+                  cursor: "pointer",
+                }}
+              />
+            </div>
+
+            {/* SFX Volume */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <label
+                htmlFor="sfx-vol"
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "rgba(0,255,128,0.8)",
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                }}
+              >
+                🔊 SFX Volume — {settings.sfxVol}%
+              </label>
+              <input
+                id="sfx-vol"
+                type="range"
+                min={0}
+                max={100}
+                value={settings.sfxVol}
+                data-ocid="settings.sfx_volume.input"
+                onChange={(e) =>
+                  updateSettings({ sfxVol: Number(e.target.value) })
+                }
+                style={{
+                  width: "100%",
+                  accentColor: "#00ff80",
+                  cursor: "pointer",
+                }}
+              />
+            </div>
+
+            {/* Show FPS Toggle */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <label
+                htmlFor="show-fps"
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "rgba(0,255,128,0.8)",
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                📊 Show FPS Counter
+              </label>
+              <button
+                id="show-fps"
+                type="button"
+                role="switch"
+                aria-checked={settings.showFps}
+                data-ocid="settings.fps.toggle"
+                onClick={() => updateSettings({ showFps: !settings.showFps })}
+                style={{
+                  width: 48,
+                  height: 26,
+                  borderRadius: 13,
+                  background: settings.showFps
+                    ? "rgba(0,255,128,0.3)"
+                    : "rgba(255,255,255,0.08)",
+                  border: `1.5px solid ${settings.showFps ? "rgba(0,255,128,0.7)" : "rgba(255,255,255,0.2)"}`,
+                  position: "relative",
+                  cursor: "pointer",
+                  transition: "background 0.2s, border-color 0.2s",
+                  padding: 0,
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 3,
+                    left: settings.showFps ? 24 : 3,
+                    width: 18,
+                    height: 18,
+                    borderRadius: "50%",
+                    background: settings.showFps
+                      ? "#00ff80"
+                      : "rgba(255,255,255,0.4)",
+                    transition: "left 0.2s, background 0.2s",
+                    boxShadow: settings.showFps
+                      ? "0 0 8px rgba(0,255,128,0.6)"
+                      : "none",
+                  }}
+                />
+              </button>
+            </div>
+
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => setShowSettings(false)}
+              style={{
+                background: "rgba(0,255,128,0.12)",
+                border: "1.5px solid rgba(0,255,128,0.5)",
+                borderRadius: 8,
+                color: "#00ff80",
+                fontFamily: "monospace",
+                fontWeight: 700,
+                fontSize: 14,
+                padding: "10px 0",
+                cursor: "pointer",
+                letterSpacing: 2,
+                marginTop: 4,
+                transition: "background 0.2s",
+              }}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── F1 Steering Controller Overlay ── */}
       <div
@@ -2325,6 +2883,265 @@ export default function F1Game({
           </div>
         </div>
       </div>
+
+      {/* Leaderboard Modal */}
+      {showLeaderboard && (
+        <div
+          data-ocid="leaderboard.dialog"
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,5,2,0.92)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+            borderRadius: 8,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowLeaderboard(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && e.target === e.currentTarget)
+              setShowLeaderboard(false);
+          }}
+          tabIndex={-1}
+        >
+          <div
+            style={{
+              background: "rgba(3,12,6,0.97)",
+              border: "1.5px solid rgba(0,255,128,0.35)",
+              borderRadius: 16,
+              padding: "28px 32px",
+              minWidth: 340,
+              maxWidth: 440,
+              maxHeight: "85vh",
+              overflowY: "auto",
+              boxShadow:
+                "0 0 80px rgba(0,255,128,0.08), 0 0 160px rgba(0,0,0,0.9)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 20,
+                  fontWeight: 900,
+                  color: "#ffd700",
+                  letterSpacing: 3,
+                  textShadow: "0 0 20px rgba(255,215,0,0.6)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                🏆 HIGH SCORES
+              </div>
+              <button
+                type="button"
+                data-ocid="leaderboard.close_button"
+                onClick={() => setShowLeaderboard(false)}
+                aria-label="Close leaderboard"
+                style={{
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  borderRadius: "50%",
+                  width: 30,
+                  height: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  color: "rgba(255,255,255,0.6)",
+                  fontSize: 16,
+                  transition: "border-color 0.2s",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Personal Best */}
+            {personalBest && (
+              <div
+                style={{
+                  background: "rgba(0,255,128,0.06)",
+                  border: "1px solid rgba(0,255,128,0.25)",
+                  borderRadius: 8,
+                  padding: "8px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    color: "rgba(0,255,128,0.6)",
+                    letterSpacing: 2,
+                  }}
+                >
+                  ⭐ YOUR BEST
+                </span>
+                <span
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    color: "#00ff80",
+                  }}
+                >
+                  {personalBest.name} —{" "}
+                  {String(personalBest.score).padStart(6, "0")} pts
+                </span>
+              </div>
+            )}
+
+            {/* Scores list */}
+            {lbLoading ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {[1, 2, 3, 4, 5].map((k) => (
+                  <div
+                    key={k}
+                    style={{
+                      height: 44,
+                      borderRadius: 8,
+                      background: "rgba(255,255,255,0.04)",
+                      animation: "pulse 1.5s ease-in-out infinite",
+                    }}
+                  />
+                ))}
+              </div>
+            ) : leaderboard.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "32px 0" }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>🏆</div>
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    color: "rgba(255,255,255,0.3)",
+                    letterSpacing: 2,
+                  }}
+                >
+                  NO SCORES YET
+                </div>
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    color: "rgba(255,255,255,0.18)",
+                    marginTop: 6,
+                  }}
+                >
+                  Be the first to set a record!
+                </div>
+              </div>
+            ) : (
+              <ol
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  listStyle: "none",
+                  padding: 0,
+                  margin: 0,
+                }}
+              >
+                {leaderboard.slice(0, 10).map((entry, i) => {
+                  const medals = ["🥇", "🥈", "🥉"];
+                  const colors = ["#ffd700", "#c0c0c0", "#cd7f32"];
+                  const glows = [
+                    "rgba(255,215,0,0.3)",
+                    "rgba(192,192,192,0.2)",
+                    "rgba(205,127,50,0.2)",
+                  ];
+                  const bgs = [
+                    "rgba(255,215,0,0.08)",
+                    "rgba(192,192,192,0.06)",
+                    "rgba(205,127,50,0.06)",
+                  ];
+                  const borders = [
+                    "rgba(255,215,0,0.35)",
+                    "rgba(192,192,192,0.25)",
+                    "rgba(205,127,50,0.25)",
+                  ];
+                  const isTop3 = i < 3;
+                  return (
+                    <li
+                      key={`lb-${entry.name}-${i}`}
+                      data-ocid={`leaderboard.item.${i + 1}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "10px 14px",
+                        borderRadius: 8,
+                        background: isTop3 ? bgs[i] : "rgba(255,255,255,0.02)",
+                        border: `1px solid ${isTop3 ? borders[i] : "rgba(255,255,255,0.07)"}`,
+                        boxShadow: isTop3 ? `0 0 12px ${glows[i]}` : "none",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 28,
+                          textAlign: "center",
+                          fontSize: isTop3 ? 18 : 12,
+                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.3)",
+                          fontFamily: "monospace",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {isTop3 ? medals[i] : `${i + 1}`}
+                      </div>
+                      <div
+                        style={{
+                          flex: 1,
+                          fontFamily: "monospace",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.8)",
+                          letterSpacing: 1,
+                          textShadow: isTop3 ? `0 0 8px ${glows[i]}` : "none",
+                        }}
+                      >
+                        {entry.name}
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 14,
+                          fontWeight: 900,
+                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.6)",
+                          letterSpacing: 1,
+                        }}
+                      >
+                        {String(entry.score).padStart(6, "0")}
+                        <span
+                          style={{ fontSize: 9, marginLeft: 3, opacity: 0.6 }}
+                        >
+                          pts
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

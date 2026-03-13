@@ -416,6 +416,9 @@ export default function App() {
             onScoreChange={handleScoreChange}
             autoStart
             stage={stage}
+            leaderboard={leaderboard as ScoreEntry[]}
+            personalBest={personalBest as ScoreEntry | null}
+            lbLoading={lbLoading}
           />
         </div>
       )}
