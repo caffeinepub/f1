@@ -20,6 +20,7 @@ let N = _WP.length;
 const HALF_TRACK = TRACK_WIDTH / 2;
 const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
 const FINISH_DISPLAY_FRAMES = 120; // 2 seconds
+const PLAYER_MAX_SPEED = 9; // same for Stage 1 and Stage 2
 
 // Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
 const GRID_POSITIONS: Point[] = [
@@ -38,7 +39,7 @@ function createInitialState(): RaceState {
     y: GRID_POSITIONS[0].y,
     heading: START_HEADING,
     speed: 0,
-    maxSpeed: 10,
+    maxSpeed: PLAYER_MAX_SPEED,
     laps: 0,
     targetWP: 1,
     lapReady: false,
@@ -55,7 +56,7 @@ function createInitialState(): RaceState {
     y: GRID_POSITIONS[i + 1].y,
     heading: START_HEADING,
     speed: 0,
-    maxSpeed: 9 + Math.random() * 1.4,
+    maxSpeed: 5 + Math.random() * 1.2,
     laps: 0,
     targetWP: 1,
     lapReady: false,
@@ -84,7 +85,8 @@ function advanceWaypoint(car: CarData, finishCount: { val: number }) {
   const dx = wp.x - car.x;
   const dy = wp.y - car.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  const threshold = car.isPlayer ? 160 : 120;
+  const threshold =
+    car.targetWP === 0 ? (car.isPlayer ? 500 : 400) : car.isPlayer ? 280 : 220;
 
   if (dist < threshold) {
     if (car.targetWP === 0 && car.lapReady) {
@@ -134,7 +136,7 @@ function updatePlayer(
 ) {
   if (car.finished) return;
 
-  const accel = 0.22 * accelIntensity;
+  const accel = 0.28 * accelIntensity;
 
   if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
     car.speed = Math.min(car.speed + accel, car.maxSpeed);
