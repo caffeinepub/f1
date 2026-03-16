@@ -15,21 +15,39 @@ export const UserRole = IDL.Variant({
 });
 export const UserProfile = IDL.Record({ 'name' : IDL.Text });
 export const ScoreEntry = IDL.Record({ 'name' : IDL.Text, 'score' : IDL.Int });
+export const Player = IDL.Record({
+  'id' : IDL.Principal,
+  'name' : IDL.Text,
+  'hasFinished' : IDL.Bool,
+  'score' : IDL.Opt(IDL.Int),
+  'finishTime' : IDL.Opt(IDL.Int),
+});
+export const RoomState = IDL.Record({
+  'allFinished' : IDL.Bool,
+  'players' : IDL.Vec(Player),
+});
 
 export const idlService = IDL.Service({
   '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
   'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
+  'cleanExpiredRooms' : IDL.Func([], [], []),
+  'createRoom' : IDL.Func([], [IDL.Text], []),
   'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
   'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
   'getLeaderboard' : IDL.Func([], [IDL.Vec(ScoreEntry)], ['query']),
   'getPersonalBest' : IDL.Func([], [IDL.Opt(ScoreEntry)], ['query']),
+  'getRoomPlayers' : IDL.Func([IDL.Text], [IDL.Vec(Player)], ['query']),
+  'getRoomState' : IDL.Func([IDL.Text], [RoomState], ['query']),
   'getUserProfile' : IDL.Func(
       [IDL.Principal],
       [IDL.Opt(UserProfile)],
       ['query'],
     ),
   'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
+  'isRoomActive' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
+  'joinRoom' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
+  'submitRaceScore' : IDL.Func([IDL.Text, IDL.Int, IDL.Int], [], []),
   'submitScore' : IDL.Func([IDL.Text, IDL.Int], [], []),
 });
 
@@ -43,21 +61,39 @@ export const idlFactory = ({ IDL }) => {
   });
   const UserProfile = IDL.Record({ 'name' : IDL.Text });
   const ScoreEntry = IDL.Record({ 'name' : IDL.Text, 'score' : IDL.Int });
+  const Player = IDL.Record({
+    'id' : IDL.Principal,
+    'name' : IDL.Text,
+    'hasFinished' : IDL.Bool,
+    'score' : IDL.Opt(IDL.Int),
+    'finishTime' : IDL.Opt(IDL.Int),
+  });
+  const RoomState = IDL.Record({
+    'allFinished' : IDL.Bool,
+    'players' : IDL.Vec(Player),
+  });
   
   return IDL.Service({
     '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
     'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
+    'cleanExpiredRooms' : IDL.Func([], [], []),
+    'createRoom' : IDL.Func([], [IDL.Text], []),
     'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
     'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
     'getLeaderboard' : IDL.Func([], [IDL.Vec(ScoreEntry)], ['query']),
     'getPersonalBest' : IDL.Func([], [IDL.Opt(ScoreEntry)], ['query']),
+    'getRoomPlayers' : IDL.Func([IDL.Text], [IDL.Vec(Player)], ['query']),
+    'getRoomState' : IDL.Func([IDL.Text], [RoomState], ['query']),
     'getUserProfile' : IDL.Func(
         [IDL.Principal],
         [IDL.Opt(UserProfile)],
         ['query'],
       ),
     'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
+    'isRoomActive' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
+    'joinRoom' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
+    'submitRaceScore' : IDL.Func([IDL.Text, IDL.Int, IDL.Int], [], []),
     'submitScore' : IDL.Func([IDL.Text, IDL.Int], [], []),
   });
 };

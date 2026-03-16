@@ -10,6 +10,17 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
+export interface Player {
+  'id' : Principal,
+  'name' : string,
+  'hasFinished' : boolean,
+  'score' : [] | [bigint],
+  'finishTime' : [] | [bigint],
+}
+export interface RoomState {
+  'allFinished' : boolean,
+  'players' : Array<Player>,
+}
 export interface ScoreEntry { 'name' : string, 'score' : bigint }
 export interface UserProfile { 'name' : string }
 export type UserRole = { 'admin' : null } |
@@ -18,13 +29,20 @@ export type UserRole = { 'admin' : null } |
 export interface _SERVICE {
   '_initializeAccessControlWithSecret' : ActorMethod<[string], undefined>,
   'assignCallerUserRole' : ActorMethod<[Principal, UserRole], undefined>,
+  'cleanExpiredRooms' : ActorMethod<[], undefined>,
+  'createRoom' : ActorMethod<[], string>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
   'getCallerUserRole' : ActorMethod<[], UserRole>,
   'getLeaderboard' : ActorMethod<[], Array<ScoreEntry>>,
   'getPersonalBest' : ActorMethod<[], [] | [ScoreEntry]>,
+  'getRoomPlayers' : ActorMethod<[string], Array<Player>>,
+  'getRoomState' : ActorMethod<[string], RoomState>,
   'getUserProfile' : ActorMethod<[Principal], [] | [UserProfile]>,
   'isCallerAdmin' : ActorMethod<[], boolean>,
+  'isRoomActive' : ActorMethod<[string], boolean>,
+  'joinRoom' : ActorMethod<[string, string], undefined>,
   'saveCallerUserProfile' : ActorMethod<[UserProfile], undefined>,
+  'submitRaceScore' : ActorMethod<[string, bigint, bigint], undefined>,
   'submitScore' : ActorMethod<[string, bigint], undefined>,
 }
 export declare const idlService: IDL.ServiceClass;

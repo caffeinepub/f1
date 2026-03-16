@@ -220,6 +220,102 @@ function getTrackNormal(i: number): Point {
   return { x: -dy / len, y: dx / len };
 }
 
+// ── Spline closest point + track constraint ──────────────────────────────────
+function getClosestPointOnSpline(
+  x: number,
+  y: number,
+  points: Point[],
+): { cx: number; cy: number; nx: number; ny: number; dist: number } {
+  const n = points.length;
+  const SAMPLES = 12; // samples per segment
+  let bestDist = Number.POSITIVE_INFINITY;
+  let bestCx = x;
+  let bestCy = y;
+  let bestNx = 0;
+  let bestNy = -1;
+
+  for (let i = 0; i < n; i++) {
+    const p0 = points[(i - 1 + n) % n];
+    const p1 = points[i];
+    const p2 = points[(i + 1) % n];
+    const p3 = points[(i + 2) % n];
+    const t = 0.5;
+    const cp1x = p1.x + ((p2.x - p0.x) * t) / 2;
+    const cp1y = p1.y + ((p2.y - p0.y) * t) / 2;
+    const cp2x = p2.x - ((p3.x - p1.x) * t) / 2;
+    const cp2y = p2.y - ((p3.y - p1.y) * t) / 2;
+
+    for (let s = 0; s <= SAMPLES; s++) {
+      const u = s / SAMPLES;
+      const u2 = u * u;
+      const u3 = u2 * u;
+      // Cubic Bezier
+      const bx =
+        (1 - u) * (1 - u) * (1 - u) * p1.x +
+        3 * (1 - u) * (1 - u) * u * cp1x +
+        3 * (1 - u) * u2 * cp2x +
+        u3 * p2.x;
+      const by =
+        (1 - u) * (1 - u) * (1 - u) * p1.y +
+        3 * (1 - u) * (1 - u) * u * cp1y +
+        3 * (1 - u) * u2 * cp2y +
+        u3 * p2.y;
+      // Tangent
+      const dtx =
+        3 * (1 - u) * (1 - u) * (cp1x - p1.x) +
+        6 * (1 - u) * u * (cp2x - cp1x) +
+        3 * u2 * (p2.x - cp2x);
+      const dty =
+        3 * (1 - u) * (1 - u) * (cp1y - p1.y) +
+        6 * (1 - u) * u * (cp2y - cp1y) +
+        3 * u2 * (p2.y - cp2y);
+      const tLen = Math.sqrt(dtx * dtx + dty * dty) || 1;
+      // Normal (perpendicular, pointing outward = right of direction)
+      const nx = dty / tLen;
+      const ny = -dtx / tLen;
+
+      const ddx = x - bx;
+      const ddy = y - by;
+      const d = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (d < bestDist) {
+        bestDist = d;
+        bestCx = bx;
+        bestCy = by;
+        bestNx = nx;
+        bestNy = ny;
+      }
+    }
+  }
+
+  // Signed lateral offset: positive = right of track direction
+  const lx = x - bestCx;
+  const ly = y - bestCy;
+  const signedDist = lx * bestNx + ly * bestNy;
+
+  return { cx: bestCx, cy: bestCy, nx: bestNx, ny: bestNy, dist: signedDist };
+}
+
+function constrainToTrack(car: CarData, points: Point[]) {
+  const LIMIT = HALF_TRACK - 22; // barrier starts slightly inside visual edge
+  const result = getClosestPointOnSpline(car.x, car.y, points);
+  const absLat = Math.abs(result.dist);
+  if (absLat > LIMIT) {
+    // Push car back inside the limit
+    const overshoot = absLat - LIMIT;
+    const sign = result.dist > 0 ? 1 : -1;
+    car.x -= result.nx * sign * overshoot;
+    car.y -= result.ny * sign * overshoot;
+    // Absorb speed (40% energy loss)
+    car.speed *= 0.6;
+    // Reflect heading slightly away from the barrier
+    const wallNx = result.nx * sign;
+    const wallNy = result.ny * sign;
+    const dot = Math.cos(car.heading) * wallNx + Math.sin(car.heading) * wallNy;
+    car.heading -= dot * wallNx * 0.8;
+    car.heading -= dot * wallNy * 0.8;
+  }
+}
+
 // ── Draw background (daytime) ─────────────────────────────────────────────────
 function drawBackground(ctx: CanvasRenderingContext2D) {
   // Sky gradient
@@ -501,6 +597,124 @@ function drawTrack(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
     ctx.textBaseline = "middle";
     ctx.fillText("PIT", 0, 0);
     ctx.restore();
+  }
+
+  // ── Armco barricades along track edges ─────────────────────────────────────
+  {
+    const BARRIER_INTERVAL = 200; // world units between barriers
+    const BARRIER_W = 40; // barrier width along track
+    const BARRIER_H = 14; // barrier height (thickness)
+    const outerOffset = HALF_TRACK + 2;
+    const innerOffset = HALF_TRACK + 2;
+
+    // Sample spline to find evenly spaced barricade positions
+    const n = _WP.length;
+    const allPts: {
+      bx: number;
+      by: number;
+      nx: number;
+      ny: number;
+      angle: number;
+    }[] = [];
+    const TOTAL_SAMPLES = n * 16;
+    for (let s = 0; s < TOTAL_SAMPLES; s++) {
+      const frac = s / TOTAL_SAMPLES;
+      const rawIdx = frac * n;
+      const i = Math.floor(rawIdx) % n;
+      const u = rawIdx - Math.floor(rawIdx);
+      const u2 = u * u;
+      const p0 = _WP[(i - 1 + n) % n];
+      const p1 = _WP[i];
+      const p2 = _WP[(i + 1) % n];
+      const p3 = _WP[(i + 2) % n];
+      const t = 0.5;
+      const cp1x = p1.x + ((p2.x - p0.x) * t) / 2;
+      const cp1y = p1.y + ((p2.y - p0.y) * t) / 2;
+      const cp2x = p2.x - ((p3.x - p1.x) * t) / 2;
+      const cp2y = p2.y - ((p3.y - p1.y) * t) / 2;
+      const bx =
+        (1 - u) * (1 - u) * (1 - u) * p1.x +
+        3 * (1 - u) * (1 - u) * u * cp1x +
+        3 * (1 - u) * u2 * cp2x +
+        u * u * u * p2.x;
+      const by =
+        (1 - u) * (1 - u) * (1 - u) * p1.y +
+        3 * (1 - u) * (1 - u) * u * cp1y +
+        3 * (1 - u) * u2 * cp2y +
+        u * u * u * p2.y;
+      const dtx =
+        3 * (1 - u) * (1 - u) * (cp1x - p1.x) +
+        6 * (1 - u) * u * (cp2x - cp1x) +
+        3 * u * u * (p2.x - cp2x);
+      const dty =
+        3 * (1 - u) * (1 - u) * (cp1y - p1.y) +
+        6 * (1 - u) * u * (cp2y - cp1y) +
+        3 * u * u * (p2.y - cp2y);
+      const tLen = Math.sqrt(dtx * dtx + dty * dty) || 1;
+      const nx = dty / tLen;
+      const ny = -dtx / tLen;
+      const angle = Math.atan2(dty, dtx);
+      allPts.push({ bx, by, nx, ny, angle });
+    }
+
+    // Pick positions spaced ~BARRIER_INTERVAL apart along spline
+    const positions: typeof allPts = [];
+    let accDist = 0;
+    for (let k = 0; k < allPts.length; k++) {
+      const prev = allPts[(k - 1 + allPts.length) % allPts.length];
+      const cur = allPts[k];
+      const ddx = cur.bx - prev.bx;
+      const ddy = cur.by - prev.by;
+      accDist += Math.sqrt(ddx * ddx + ddy * ddy);
+      if (k === 0 || accDist >= BARRIER_INTERVAL) {
+        positions.push(cur);
+        accDist = 0;
+      }
+    }
+
+    for (let k = 0; k < positions.length; k++) {
+      const { bx, by, nx, ny, angle } = positions[k];
+      const isRed = k % 2 === 0;
+
+      for (const side of [1, -1] as const) {
+        const offset = side === 1 ? outerOffset : innerOffset;
+        const bsX = bx + nx * offset * side - camX;
+        const bsY = by + ny * offset * side - camY;
+        if (
+          bsX < -60 ||
+          bsX > CANVAS_W + 60 ||
+          bsY < -60 ||
+          bsY > CANVAS_H + 60
+        )
+          continue;
+
+        ctx.save();
+        ctx.translate(bsX, bsY);
+        ctx.rotate(angle);
+        // Shadow
+        ctx.shadowColor = "rgba(0,0,0,0.5)";
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetY = 2;
+        // Main color
+        ctx.fillStyle = isRed ? "#dd1111" : "#f0f0f0";
+        ctx.fillRect(-BARRIER_W / 2, -BARRIER_H / 2, BARRIER_W, BARRIER_H);
+        // Highlight stripe on top
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.fillStyle = isRed ? "rgba(255,80,80,0.5)" : "rgba(255,255,255,0.8)";
+        ctx.fillRect(
+          -BARRIER_W / 2,
+          -BARRIER_H / 2,
+          BARRIER_W,
+          BARRIER_H * 0.35,
+        );
+        // Border
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(-BARRIER_W / 2, -BARRIER_H / 2, BARRIER_W, BARRIER_H);
+        ctx.restore();
+      }
+    }
   }
 
   // Dashed center line
@@ -2076,6 +2290,7 @@ export default function F1Game({
         // Update AI cars
         for (let i = 1; i < s.cars.length; i++) {
           updateAI(s.cars[i], finishCountRef.current);
+          constrainToTrack(s.cars[i], _WP);
         }
         // Update player
         updatePlayer(
@@ -2085,6 +2300,7 @@ export default function F1Game({
           steerIntensityRef.current,
           accelIntensityRef.current,
         );
+        constrainToTrack(player, _WP);
 
         // Tyre screech: triggered by steering/braking at speed
         {

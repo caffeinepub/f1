@@ -7,6 +7,17 @@ export interface None {
     __kind__: "None";
 }
 export type Option<T> = Some<T> | None;
+export interface RoomState {
+    allFinished: boolean;
+    players: Array<Player>;
+}
+export interface Player {
+    id: Principal;
+    name: string;
+    hasFinished: boolean;
+    score?: bigint;
+    finishTime?: bigint;
+}
 export interface ScoreEntry {
     name: string;
     score: bigint;
@@ -21,12 +32,19 @@ export enum UserRole {
 }
 export interface backendInterface {
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
+    cleanExpiredRooms(): Promise<void>;
+    createRoom(): Promise<string>;
     getCallerUserProfile(): Promise<UserProfile | null>;
     getCallerUserRole(): Promise<UserRole>;
     getLeaderboard(): Promise<Array<ScoreEntry>>;
     getPersonalBest(): Promise<ScoreEntry | null>;
+    getRoomPlayers(roomCode: string): Promise<Array<Player>>;
+    getRoomState(roomCode: string): Promise<RoomState>;
     getUserProfile(user: Principal): Promise<UserProfile | null>;
     isCallerAdmin(): Promise<boolean>;
+    isRoomActive(code: string): Promise<boolean>;
+    joinRoom(code: string, playerName: string): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
+    submitRaceScore(roomCode: string, score: bigint, finishTime: bigint): Promise<void>;
     submitScore(name: string, score: bigint): Promise<void>;
 }
