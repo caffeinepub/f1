@@ -14,6 +14,12 @@ export const UserRole = IDL.Variant({
   'guest' : IDL.Null,
 });
 export const UserProfile = IDL.Record({ 'name' : IDL.Text });
+export const ChatMessage = IDL.Record({
+  'sender' : IDL.Text,
+  'isReaction' : IDL.Bool,
+  'message' : IDL.Text,
+  'timestamp' : IDL.Int,
+});
 export const ScoreEntry = IDL.Record({ 'name' : IDL.Text, 'score' : IDL.Int });
 export const Player = IDL.Record({
   'id' : IDL.Principal,
@@ -34,6 +40,7 @@ export const idlService = IDL.Service({
   'createRoom' : IDL.Func([], [IDL.Text], []),
   'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
   'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
+  'getChatMessages' : IDL.Func([IDL.Text], [IDL.Vec(ChatMessage)], ['query']),
   'getLeaderboard' : IDL.Func([], [IDL.Vec(ScoreEntry)], ['query']),
   'getPersonalBest' : IDL.Func([], [IDL.Opt(ScoreEntry)], ['query']),
   'getRoomPlayers' : IDL.Func([IDL.Text], [IDL.Vec(Player)], ['query']),
@@ -47,6 +54,8 @@ export const idlService = IDL.Service({
   'isRoomActive' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
   'joinRoom' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
+  'sendChatMessage' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'sendReaction' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'submitRaceScore' : IDL.Func([IDL.Text, IDL.Int, IDL.Int], [], []),
   'submitScore' : IDL.Func([IDL.Text, IDL.Int], [], []),
 });
@@ -60,6 +69,12 @@ export const idlFactory = ({ IDL }) => {
     'guest' : IDL.Null,
   });
   const UserProfile = IDL.Record({ 'name' : IDL.Text });
+  const ChatMessage = IDL.Record({
+    'sender' : IDL.Text,
+    'isReaction' : IDL.Bool,
+    'message' : IDL.Text,
+    'timestamp' : IDL.Int,
+  });
   const ScoreEntry = IDL.Record({ 'name' : IDL.Text, 'score' : IDL.Int });
   const Player = IDL.Record({
     'id' : IDL.Principal,
@@ -80,6 +95,7 @@ export const idlFactory = ({ IDL }) => {
     'createRoom' : IDL.Func([], [IDL.Text], []),
     'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
     'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
+    'getChatMessages' : IDL.Func([IDL.Text], [IDL.Vec(ChatMessage)], ['query']),
     'getLeaderboard' : IDL.Func([], [IDL.Vec(ScoreEntry)], ['query']),
     'getPersonalBest' : IDL.Func([], [IDL.Opt(ScoreEntry)], ['query']),
     'getRoomPlayers' : IDL.Func([IDL.Text], [IDL.Vec(Player)], ['query']),
@@ -93,6 +109,8 @@ export const idlFactory = ({ IDL }) => {
     'isRoomActive' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
     'joinRoom' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
+    'sendChatMessage' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'sendReaction' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'submitRaceScore' : IDL.Func([IDL.Text, IDL.Int, IDL.Int], [], []),
     'submitScore' : IDL.Func([IDL.Text, IDL.Int], [], []),
   });

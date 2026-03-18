@@ -145,18 +145,18 @@ function updatePlayer(
     car.speed = Math.min(car.speed + accel, car.maxSpeed);
   } else if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
     // Stronger braking for better control
-    car.speed = Math.max(car.speed - 0.65, -2);
+    car.speed = Math.max(car.speed - 0.85, -2); // max stability: stronger braking
   } else {
     // Slightly quicker natural deceleration (0.97 -> 0.96)
-    car.speed *= 0.96;
+    car.speed *= 0.94; // max stability: snappier natural deceleration
   }
 
   if (Math.abs(car.speed) > 0.2) {
     // Base steer rate increased for better grip; analog intensity scales it
-    const baseSteer = 0.062;
+    const baseSteer = 0.078; // max grip: high steer responsiveness
     // Speed-dependent: full grip at moderate speed, slight reduction at max
     const speedRatio = Math.abs(car.speed) / car.maxSpeed;
-    const gripFactor = 1.0 - speedRatio * 0.25; // up to 25% less turn at top speed
+    const gripFactor = 1.0 - speedRatio * 0.05; // max stability: near-constant grip at all speeds
     const steer = baseSteer * gripFactor * steerIntensity;
 
     if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) {
@@ -353,6 +353,7 @@ function drawAudience(
   ctx: CanvasRenderingContext2D,
   camX: number,
   camY: number,
+  logoImg: HTMLImageElement | null,
 ) {
   const STAND_OFFSET = 300; // perpendicular offset from track center
   const STAND_W = 400; // world units wide
@@ -448,6 +449,13 @@ function drawAudience(
         // Flag rectangle
         ctx.fillStyle = flagColors[f % flagColors.length];
         ctx.fillRect(flagX + 1, flagY - 18, 14, 8);
+      }
+
+      // F1_M logo banner on select grandstands
+      if (logoImg?.complete && [0, 6, 12, 18].includes(wpIdx)) {
+        const logoW = 80;
+        const logoH = 28;
+        ctx.drawImage(logoImg, -logoW / 2, -STAND_DEPTH / 2 - 50, logoW, logoH);
       }
 
       ctx.restore();
@@ -1704,92 +1712,159 @@ function useBackgroundMusic() {
     return audioCtxRef.current;
   };
 
+  // beatCount ref for pattern sequencing
+  const beatCountRef = useRef<number>(0);
+
   const playBeat = (ctx: AudioContext, master: GainNode, time: number) => {
-    // Kick drum
+    const beat = beatCountRef.current;
+    beatCountRef.current = (beat + 1) % 16;
+    const bd = 60 / 175; // beat duration at 175 BPM
+
+    // --- Kick on every beat (4-on-the-floor techno style) ---
     const kick = ctx.createOscillator();
     const kickGain = ctx.createGain();
     kick.type = "sine";
-    kick.frequency.setValueAtTime(150, time);
-    kick.frequency.exponentialRampToValueAtTime(40, time + 0.12);
-    kickGain.gain.setValueAtTime(0.9, time);
-    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
+    kick.frequency.setValueAtTime(200, time);
+    kick.frequency.exponentialRampToValueAtTime(35, time + 0.1);
+    kickGain.gain.setValueAtTime(1.1, time);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
     kick.connect(kickGain);
     kickGain.connect(master);
     kick.start(time);
-    kick.stop(time + 0.15);
+    kick.stop(time + 0.2);
 
-    // Hi-hat 1
-    const hihat1 = ctx.createOscillator();
-    const hhGain1 = ctx.createGain();
-    const hhFilter1 = ctx.createBiquadFilter();
-    hihat1.type = "square";
-    hihat1.frequency.value = 8000;
-    hhFilter1.type = "highpass";
-    hhFilter1.frequency.value = 7000;
-    hhGain1.gain.setValueAtTime(0.15, time + 0.125);
-    hhGain1.gain.exponentialRampToValueAtTime(0.001, time + 0.175);
-    hihat1.connect(hhFilter1);
-    hhFilter1.connect(hhGain1);
-    hhGain1.connect(master);
-    hihat1.start(time + 0.125);
-    hihat1.stop(time + 0.18);
+    // --- Open hi-hat on offbeats ---
+    const makeHat = (t: number, open: boolean) => {
+      const buf = ctx.createBuffer(
+        1,
+        ctx.sampleRate * (open ? 0.15 : 0.04),
+        ctx.sampleRate,
+      );
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const filt = ctx.createBiquadFilter();
+      filt.type = "highpass";
+      filt.frequency.value = open ? 8000 : 10000;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(open ? 0.18 : 0.12, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.14 : 0.03));
+      src.connect(filt);
+      filt.connect(g);
+      g.connect(master);
+      src.start(t);
+    };
+    makeHat(time + bd * 0.5, true); // offbeat open hat
+    makeHat(time + bd * 0.25, false); // 16th closed hat
+    makeHat(time + bd * 0.75, false);
 
-    // Hi-hat 2
-    const hihat2 = ctx.createOscillator();
-    const hhGain2 = ctx.createGain();
-    const hhFilter2 = ctx.createBiquadFilter();
-    hihat2.type = "square";
-    hihat2.frequency.value = 8000;
-    hhFilter2.type = "highpass";
-    hhFilter2.frequency.value = 7000;
-    hhGain2.gain.setValueAtTime(0.12, time + 0.25);
-    hhGain2.gain.exponentialRampToValueAtTime(0.001, time + 0.3);
-    hihat2.connect(hhFilter2);
-    hhFilter2.connect(hhGain2);
-    hhGain2.connect(master);
-    hihat2.start(time + 0.25);
-    hihat2.stop(time + 0.31);
+    // --- Snare / clap on beats 2 & 4 (every other beat) ---
+    if (beat % 2 === 1) {
+      const snareBuf = ctx.createBuffer(
+        1,
+        ctx.sampleRate * 0.12,
+        ctx.sampleRate,
+      );
+      const sd = snareBuf.getChannelData(0);
+      for (let i = 0; i < sd.length; i++) sd[i] = Math.random() * 2 - 1;
+      const snare = ctx.createBufferSource();
+      snare.buffer = snareBuf;
+      const sf = ctx.createBiquadFilter();
+      sf.type = "bandpass";
+      sf.frequency.value = 3000;
+      sf.Q.value = 0.8;
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(0.55, time);
+      sg.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
+      snare.connect(sf);
+      sf.connect(sg);
+      sg.connect(master);
+      snare.start(time);
+      // Clap layer
+      const clapBuf = ctx.createBuffer(
+        1,
+        ctx.sampleRate * 0.05,
+        ctx.sampleRate,
+      );
+      const cd = clapBuf.getChannelData(0);
+      for (let i = 0; i < cd.length; i++) cd[i] = Math.random() * 2 - 1;
+      const clap = ctx.createBufferSource();
+      clap.buffer = clapBuf;
+      const cf = ctx.createBiquadFilter();
+      cf.type = "bandpass";
+      cf.frequency.value = 1800;
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.3, time + 0.008);
+      cg.gain.exponentialRampToValueAtTime(0.001, time + 0.06);
+      clap.connect(cf);
+      cf.connect(cg);
+      cg.connect(master);
+      clap.start(time + 0.008);
+    }
 
-    // Snare
-    const snareBuffer = ctx.createBuffer(
-      1,
-      ctx.sampleRate * 0.1,
-      ctx.sampleRate,
-    );
-    const snareData = snareBuffer.getChannelData(0);
-    for (let i = 0; i < snareData.length; i++)
-      snareData[i] = Math.random() * 2 - 1;
-    const snare = ctx.createBufferSource();
-    const snareGain = ctx.createGain();
-    const snareFilter = ctx.createBiquadFilter();
-    snare.buffer = snareBuffer;
-    snareFilter.type = "bandpass";
-    snareFilter.frequency.value = 2500;
-    snareGain.gain.setValueAtTime(0.4, time + 0.25);
-    snareGain.gain.exponentialRampToValueAtTime(0.001, time + 0.35);
-    snare.connect(snareFilter);
-    snareFilter.connect(snareGain);
-    snareGain.connect(master);
-    snare.start(time + 0.25);
-
-    // Bass synth note
-    const bassNotes = [55, 55, 73.4, 65.4, 55, 55, 61.7, 49];
-    const beatIdx = Math.floor(time * 2) % bassNotes.length;
+    // --- Pumping bass line (deep house/techno) ---
+    const bassPattern = [
+      110, 110, 82.4, 98, 110, 73.4, 82.4, 98, 110, 110, 82.4, 98, 73.4, 73.4,
+      82.4, 110,
+    ];
+    const bassFreq = bassPattern[beat % bassPattern.length];
     const bass = ctx.createOscillator();
     const bassGain = ctx.createGain();
     const bassFilter = ctx.createBiquadFilter();
     bass.type = "sawtooth";
-    bass.frequency.value = bassNotes[beatIdx];
+    bass.frequency.value = bassFreq;
     bassFilter.type = "lowpass";
-    bassFilter.frequency.value = 400;
-    bassFilter.Q.value = 2;
-    bassGain.gain.setValueAtTime(0.5, time);
-    bassGain.gain.exponentialRampToValueAtTime(0.001, time + 0.45);
+    bassFilter.frequency.value = 500;
+    bassFilter.Q.value = 4;
+    bassGain.gain.setValueAtTime(0.65, time);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.85);
     bass.connect(bassFilter);
     bassFilter.connect(bassGain);
     bassGain.connect(master);
     bass.start(time);
-    bass.stop(time + 0.5);
+    bass.stop(time + bd * 0.9);
+
+    // --- Synth lead melody (arpeggiated) ---
+    const leadPattern = [
+      440, 0, 523, 587, 440, 494, 0, 523, 659, 0, 587, 523, 440, 0, 494, 659,
+    ];
+    const leadFreq = leadPattern[beat % leadPattern.length];
+    if (leadFreq > 0) {
+      const lead = ctx.createOscillator();
+      const leadGain = ctx.createGain();
+      const leadFilter = ctx.createBiquadFilter();
+      lead.type = "square";
+      lead.frequency.value = leadFreq;
+      leadFilter.type = "bandpass";
+      leadFilter.frequency.value = leadFreq * 2;
+      leadFilter.Q.value = 2;
+      leadGain.gain.setValueAtTime(0.22, time);
+      leadGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.7);
+      lead.connect(leadFilter);
+      leadFilter.connect(leadGain);
+      leadGain.connect(master);
+      lead.start(time);
+      lead.stop(time + bd * 0.75);
+    }
+
+    // --- Pad chord (every 4 beats, ambient background) ---
+    if (beat % 4 === 0) {
+      const padFreqs = [220, 277, 330];
+      for (const freq of padFreqs) {
+        const pad = ctx.createOscillator();
+        const padGain = ctx.createGain();
+        pad.type = "sine";
+        pad.frequency.value = freq;
+        padGain.gain.setValueAtTime(0.06, time);
+        padGain.gain.linearRampToValueAtTime(0.08, time + bd * 2);
+        padGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 4);
+        pad.connect(padGain);
+        padGain.connect(master);
+        pad.start(time);
+        pad.stop(time + bd * 4.1);
+      }
+    }
   };
 
   const startEngine = (ctx: AudioContext, master: GainNode) => {
@@ -1837,7 +1912,7 @@ function useBackgroundMusic() {
 
     startEngine(ctx, master);
 
-    const BPM = 160;
+    const BPM = 175;
     const beatDur = 60 / BPM;
     let nextBeat = ctx.currentTime + 0.05;
 
@@ -2001,8 +2076,15 @@ export default function F1Game({
   const rafRef = useRef<number>(0);
   const goTimerRef = useRef<number>(0); // frames to show GO!
   const finishCountRef = useRef({ val: 0 });
+  const logoImgRef = useRef<HTMLImageElement | null>(null);
   const lapFlashRef = useRef<number>(0); // frames since last lap completed (for flash animation)
   const prevLapsRef = useRef<number>(0); // previous player lap count to detect increments
+
+  useEffect(() => {
+    const img = new window.Image();
+    img.src = "/assets/uploads/IMG_1124-1.jpeg";
+    logoImgRef.current = img;
+  }, []);
 
   // Background music
   const {
@@ -2381,7 +2463,7 @@ export default function F1Game({
       const camY = player.y - CANVAS_H / 2;
 
       drawBackground(ctx);
-      drawAudience(ctx, camX, camY);
+      drawAudience(ctx, camX, camY, logoImgRef.current);
       drawTrack(ctx, camX, camY);
       drawStartLine(ctx, camX, camY);
 

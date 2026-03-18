@@ -18,6 +18,12 @@ export interface Player {
     score?: bigint;
     finishTime?: bigint;
 }
+export interface ChatMessage {
+    sender: string;
+    isReaction: boolean;
+    message: string;
+    timestamp: bigint;
+}
 export interface ScoreEntry {
     name: string;
     score: bigint;
@@ -36,6 +42,7 @@ export interface backendInterface {
     createRoom(): Promise<string>;
     getCallerUserProfile(): Promise<UserProfile | null>;
     getCallerUserRole(): Promise<UserRole>;
+    getChatMessages(roomCode: string): Promise<Array<ChatMessage>>;
     getLeaderboard(): Promise<Array<ScoreEntry>>;
     getPersonalBest(): Promise<ScoreEntry | null>;
     getRoomPlayers(roomCode: string): Promise<Array<Player>>;
@@ -45,6 +52,8 @@ export interface backendInterface {
     isRoomActive(code: string): Promise<boolean>;
     joinRoom(code: string, playerName: string): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
+    sendChatMessage(roomCode: string, message: string): Promise<void>;
+    sendReaction(roomCode: string, reaction: string): Promise<void>;
     submitRaceScore(roomCode: string, score: bigint, finishTime: bigint): Promise<void>;
     submitScore(name: string, score: bigint): Promise<void>;
 }

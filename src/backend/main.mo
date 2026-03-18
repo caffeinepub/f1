@@ -10,18 +10,18 @@ import Time "mo:core/Time";
 import Iter "mo:core/Iter";
 import Order "mo:core/Order";
 import List "mo:core/List";
-import Random "mo:core/Random";
+
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
-import Migration "migration";
 
-(with migration = Migration.run)
+// Use migration for data add
+
 actor {
-  // Initialize the access control system
+  // Access control system
   let accessControlState = AccessControl.initState();
   include MixinAuthorization(accessControlState);
 
-  // User Profile System (required by instructions)
+  // User Profile
   public type UserProfile = {
     name : Text;
   };
@@ -64,7 +64,6 @@ actor {
   };
 
   public shared ({ caller }) func submitScore(name : Text, score : Int) : async () {
-    // Only authenticated users can submit scores
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can submit scores");
     };
@@ -82,7 +81,6 @@ actor {
   };
 
   public query ({ caller }) func getLeaderboard() : async [ScoreEntry] {
-    // Public access - no authorization check needed
     let entries = scores.values().toArray();
     let sorted = entries.sort();
     let topEntries = sorted.sliceToArray(0, Int.min(10, entries.size()));
@@ -90,7 +88,6 @@ actor {
   };
 
   public query ({ caller }) func getPersonalBest() : async ?ScoreEntry {
-    // Only authenticated users can query their personal best
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can view personal best");
     };
@@ -114,24 +111,31 @@ actor {
     isActive : Bool;
   };
 
+  public type RoomState = {
+    players : [Player];
+    allFinished : Bool;
+  };
+
+  public type ChatMessage = {
+    sender : Text;
+    message : Text;
+    timestamp : Int;
+    isReaction : Bool;
+  };
+
   type InternalRoom = {
     code : Text;
     host : Principal;
     createdAt : Int;
     players : List.List<Player>;
     isActive : Bool;
-  };
-
-  public type RoomState = {
-    players : [Player];
-    allFinished : Bool;
+    chatMessages : List.List<ChatMessage>;
   };
 
   let rooms = Map.empty<Text, InternalRoom>();
-  let roomLifetime = 2 * 60 * 60 * 1_000_000_000; // 2h in nanoseconds
+  let roomLifetime = 2 * 60 * 60 * 1_000_000_000;
 
   public shared ({ caller }) func createRoom() : async Text {
-    // Only authenticated users can create rooms
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can create rooms");
     };
@@ -145,6 +149,7 @@ actor {
       createdAt = currentTime;
       players = List.empty<Player>();
       isActive = true;
+      chatMessages = List.empty<ChatMessage>();
     };
 
     rooms.add(code, newRoom);
@@ -155,7 +160,6 @@ actor {
     code : Text,
     playerName : Text,
   ) : async () {
-    // Only authenticated users can join rooms
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can join rooms");
     };
@@ -171,12 +175,10 @@ actor {
           Runtime.trap("Room is full");
         };
 
-        // Check for duplicate player name
         if (room.players.any(func(p) { p.name == playerName })) {
           Runtime.trap("Player name already taken");
         };
 
-        // Check if player already exists and has finished
         switch (room.players.find(func(p) { p.id == caller })) {
           case (?existingPlayer) {
             if (existingPlayer.hasFinished) {
@@ -204,7 +206,6 @@ actor {
     score : Int,
     finishTime : Int,
   ) : async () {
-    // Only authenticated users can submit race scores
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can submit race scores");
     };
@@ -243,8 +244,91 @@ actor {
     };
   };
 
+  public shared ({ caller }) func sendChatMessage(roomCode : Text, message : Text) : async () {
+    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
+      Runtime.trap("Unauthorized: Only users can chat");
+    };
+
+    if (message.size() == 0) {
+      Runtime.trap("Message cannot be empty");
+    };
+
+    switch (rooms.get(roomCode)) {
+      case (null) { Runtime.trap("Room not found") };
+      case (?room) {
+        if (not room.isActive) {
+          Runtime.trap("Room is no longer active");
+        };
+
+        let senderName = switch (room.players.find(func(player) { player.id == caller })) {
+          case (?player) { player.name };
+          case (null) { "Unknown" };
+        };
+
+        let newMessage : ChatMessage = {
+          sender = senderName;
+          message = Text.fromArray(message.toArray().sliceToArray(0, Nat.min(200, message.size())));
+          timestamp = Time.now();
+          isReaction = false;
+        };
+
+        if (room.chatMessages.size() >= 50) {
+          let newChatMessages = switch (room.chatMessages.last()) {
+            case (?_) {
+              ignore room.chatMessages.removeLast();
+              room.chatMessages;
+            };
+            case (null) { room.chatMessages };
+          };
+          newChatMessages.add(newMessage);
+        } else {
+          room.chatMessages.add(newMessage);
+        };
+      };
+    };
+  };
+
+  public shared ({ caller }) func sendReaction(roomCode : Text, reaction : Text) : async () {
+    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
+      Runtime.trap("Unauthorized: Only users can react");
+    };
+
+    switch (rooms.get(roomCode)) {
+      case (null) { Runtime.trap("Room not found") };
+      case (?room) {
+        if (not room.isActive) {
+          Runtime.trap("Room is no longer active");
+        };
+
+        let senderName = switch (room.players.find(func(player) { player.id == caller })) {
+          case (?player) { player.name };
+          case (null) { "Unknown" };
+        };
+
+        let newReaction : ChatMessage = {
+          sender = senderName;
+          message = reaction;
+          timestamp = Time.now();
+          isReaction = true;
+        };
+
+        if (room.chatMessages.size() >= 50) {
+          let newChatMessages = switch (room.chatMessages.last()) {
+            case (?_) {
+              ignore room.chatMessages.removeLast();
+              room.chatMessages;
+            };
+            case (null) { room.chatMessages };
+          };
+          newChatMessages.add(newReaction);
+        } else {
+          room.chatMessages.add(newReaction);
+        };
+      };
+    };
+  };
+
   public query ({ caller }) func getRoomState(roomCode : Text) : async RoomState {
-    // Public access - anyone with the room code can view state (room code acts as secret)
     switch (rooms.get(roomCode)) {
       case (null) { Runtime.trap("Room not found") };
       case (?room) {
@@ -262,7 +346,22 @@ actor {
   };
 
   public query ({ caller }) func getRoomPlayers(roomCode : Text) : async [Player] {
-    // Public access - anyone with the room code can view players
+    switch (rooms.get(roomCode)) {
+      case (null) { Runtime.trap("Room not found") };
+      case (?room) {
+        if (not room.isActive) {
+          Runtime.trap("Room is no longer active");
+        };
+        room.players.toArray();
+      };
+    };
+  };
+
+  public query ({ caller }) func getChatMessages(roomCode : Text) : async [ChatMessage] {
+    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
+      Runtime.trap("Unauthorized: Only users can view chat messages");
+    };
+
     switch (rooms.get(roomCode)) {
       case (null) { Runtime.trap("Room not found") };
       case (?room) {
@@ -270,13 +369,20 @@ actor {
           Runtime.trap("Room is no longer active");
         };
 
-        room.players.toArray();
+        // Verify caller is a participant in the room or is an admin
+        let isParticipant = room.players.any(func(player) { player.id == caller });
+        let isAdminUser = AccessControl.isAdmin(accessControlState, caller);
+
+        if (not isParticipant and not isAdminUser) {
+          Runtime.trap("Unauthorized: Only room participants can view chat messages");
+        };
+
+        room.chatMessages.toArray();
       };
     };
   };
 
   public query ({ caller }) func isRoomActive(code : Text) : async Bool {
-    // Public access - anyone can check if a room code is active
     switch (rooms.get(code)) {
       case (null) { Runtime.trap("Room not found") };
       case (?room) { room.isActive };
@@ -296,7 +402,6 @@ actor {
   };
 
   public shared ({ caller }) func cleanExpiredRooms() : async () {
-    // Only admins can clean expired rooms to prevent abuse
     if (not (AccessControl.hasPermission(accessControlState, caller, #admin))) {
       Runtime.trap("Unauthorized: Only admins can clean expired rooms");
     };
@@ -342,3 +447,4 @@ actor {
     code;
   };
 };
+

@@ -448,6 +448,219 @@ function MultiLobby({
   );
 }
 
+// ── Room Chat Component ───────────────────────────────────────────────────────
+
+const REACTION_EMOJIS = ["🏎️", "🏁", "🔥", "👍", "😂", "🚀"];
+
+interface ChatMessage {
+  sender: string;
+  message: string;
+  timestamp: bigint;
+  isReaction: boolean;
+}
+
+function formatRelativeTime(timestamp: bigint): string {
+  const now = Date.now();
+  const msgTime = Number(timestamp) / 1_000_000; // nanoseconds to ms
+  const diffMs = now - msgTime;
+  if (diffMs < 10000) return "just now";
+  if (diffMs < 60000) return `${Math.floor(diffMs / 1000)}s ago`;
+  if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+  return `${Math.floor(diffMs / 3600000)}h ago`;
+}
+
+function RoomChat({
+  actor,
+  roomCode,
+}: {
+  actor: any;
+  roomCode: string;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputValue, setInputValue] = useState("");
+  const [sending, setSending] = useState(false);
+  const [pulsedEmoji, setPulsedEmoji] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!actor || !roomCode) return;
+    const fetchMessages = () => {
+      actor
+        .getChatMessages(roomCode)
+        .then((msgs: ChatMessage[]) => {
+          setMessages(msgs.slice(-50));
+          setTimeout(() => {
+            if (scrollRef.current) {
+              scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+            }
+          }, 0);
+        })
+        .catch(() => {});
+    };
+    fetchMessages();
+    pollRef.current = setInterval(fetchMessages, 2000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [actor, roomCode]);
+
+  const handleSend = async () => {
+    const text = inputValue.trim();
+    if (!text || sending || !actor) return;
+    setSending(true);
+    setInputValue("");
+    try {
+      await actor.sendChatMessage(roomCode, text);
+    } catch {
+      toast.error("Failed to send message");
+      setInputValue(text);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleReaction = async (emoji: string) => {
+    if (!actor) return;
+    setPulsedEmoji(emoji);
+    setTimeout(() => setPulsedEmoji(null), 400);
+    try {
+      await actor.sendReaction(roomCode, emoji);
+    } catch {
+      toast.error("Failed to send reaction");
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl flex flex-col overflow-hidden"
+      style={multiPanelStyle}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center gap-2 px-3 py-2"
+        style={{ borderBottom: "1px solid oklch(0.82 0.22 138 / 0.15)" }}
+      >
+        <span
+          className="text-[10px] font-black tracking-[0.2em] uppercase"
+          style={{ color: "oklch(0.6 0.12 138)" }}
+        >
+          🎙 TEAM RADIO
+        </span>
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5"
+        style={{ minHeight: "140px", maxHeight: "180px" }}
+      >
+        {messages.length === 0 ? (
+          <div
+            data-ocid="room.chat.empty_state"
+            className="flex items-center justify-center h-full text-xs text-muted-foreground/50 pt-4"
+          >
+            No messages yet. Say hello! 👋
+          </div>
+        ) : (
+          messages.map((msg, i) =>
+            msg.isReaction ? (
+              <motion.div
+                key={`r-${i}-${String(msg.timestamp)}`}
+                initial={{ scale: 0.5, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="flex flex-col items-center py-1"
+              >
+                <span className="text-3xl">{msg.message}</span>
+                <span className="text-[9px] text-muted-foreground/60 mt-0.5">
+                  {msg.sender}
+                </span>
+              </motion.div>
+            ) : (
+              <div
+                key={`m-${i}-${String(msg.timestamp)}`}
+                className="flex gap-1.5 items-start text-xs"
+              >
+                <span
+                  className="font-black shrink-0 mt-0.5"
+                  style={{ color: "var(--neon-green)", fontSize: "10px" }}
+                >
+                  {msg.sender}
+                </span>
+                <span className="text-foreground/80 flex-1 leading-snug">
+                  {msg.message}
+                </span>
+                <span className="text-[9px] text-muted-foreground/40 shrink-0 mt-0.5">
+                  {formatRelativeTime(msg.timestamp)}
+                </span>
+              </div>
+            ),
+          )
+        )}
+      </div>
+
+      {/* Reaction bar */}
+      <div
+        className="flex items-center gap-1 px-3 py-1.5"
+        style={{ borderTop: "1px solid oklch(0.22 0.02 260 / 0.5)" }}
+      >
+        {REACTION_EMOJIS.map((emoji) => (
+          <motion.button
+            key={emoji}
+            type="button"
+            data-ocid="room.reaction.button"
+            onClick={() => handleReaction(emoji)}
+            animate={
+              pulsedEmoji === emoji ? { scale: [1, 1.45, 1] } : { scale: 1 }
+            }
+            transition={{ duration: 0.35 }}
+            className="text-base leading-none rounded-md px-1.5 py-1 hover:bg-white/5 transition-colors"
+            title={emoji}
+          >
+            {emoji}
+          </motion.button>
+        ))}
+      </div>
+
+      {/* Input */}
+      <div
+        className="flex items-center gap-2 px-3 py-2"
+        style={{ borderTop: "1px solid oklch(0.22 0.02 260 / 0.5)" }}
+      >
+        <input
+          data-ocid="room.chat.input"
+          type="text"
+          placeholder="Message the team..."
+          value={inputValue}
+          maxLength={200}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+          className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/40 outline-none"
+          style={{ caretColor: "var(--neon-green)" }}
+        />
+        <button
+          data-ocid="room.chat.submit_button"
+          type="button"
+          onClick={handleSend}
+          disabled={sending || !inputValue.trim()}
+          className="shrink-0 p-1.5 rounded-md transition-all hover:opacity-80 disabled:opacity-30"
+          style={{
+            background: "oklch(0.82 0.22 138 / 0.15)",
+            border: "1px solid oklch(0.82 0.22 138 / 0.3)",
+            color: "var(--neon-green)",
+          }}
+        >
+          {sending ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Send className="w-3.5 h-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MultiCreate({
   actor,
   isFetching,
@@ -614,6 +827,8 @@ function MultiCreate({
             )}
           </div>
 
+          {roomCode && <RoomChat actor={actor} roomCode={roomCode} />}
+
           <Button
             data-ocid="multi.create.start_button"
             onClick={() => onStart(roomCode)}
@@ -666,6 +881,29 @@ function MultiJoin({
   const [name, setName] = useState("TITOO");
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState("");
+  const [joinedRoom, setJoinedRoom] = useState<{
+    roomCode: string;
+    playerName: string;
+  } | null>(null);
+  const [roomState, setRoomState] = useState<RoomState | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!joinedRoom || !actor) return;
+    const poll = () => {
+      actor
+        .getRoomState(joinedRoom.roomCode)
+        .then((state: RoomState) => {
+          setRoomState(state);
+        })
+        .catch(() => {});
+    };
+    poll();
+    pollRef.current = setInterval(poll, 2000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [joinedRoom, actor]);
 
   const handleJoin = async () => {
     const trimCode = code.trim().toUpperCase();
@@ -688,12 +926,107 @@ function MultiJoin({
         return;
       }
       await actor.joinRoom(trimCode, trimName);
-      onJoined(trimCode, trimName);
+      setJoinedRoom({ roomCode: trimCode, playerName: trimName });
+      setJoining(false);
     } catch {
       setError("Failed to join room. Please try again.");
       setJoining(false);
     }
   };
+
+  if (joinedRoom) {
+    const players = roomState?.players ?? [];
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -20 }}
+        className="w-full flex flex-col gap-4"
+      >
+        <div className="text-center">
+          <h2
+            className="text-xl font-black tracking-tight"
+            style={{ color: "oklch(0.75 0.18 260)" }}
+          >
+            WAITING FOR HOST
+          </h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Room{" "}
+            <span
+              className="font-black font-mono"
+              style={{ color: "oklch(0.75 0.18 260)" }}
+            >
+              {joinedRoom.roomCode}
+            </span>
+            {" · "}Racing as{" "}
+            <span className="font-bold text-foreground">
+              {joinedRoom.playerName}
+            </span>
+          </p>
+        </div>
+
+        <div className="rounded-xl p-4" style={multiPanelStyle}>
+          <div className="flex items-center gap-2 mb-3">
+            <Users
+              className="w-4 h-4"
+              style={{ color: "oklch(0.6 0.12 260)" }}
+            />
+            <span className="text-xs font-bold tracking-widest uppercase text-muted-foreground">
+              Players ({players.length})
+            </span>
+          </div>
+          {players.length === 0 ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground/60 py-2">
+              <Clock className="w-3.5 h-3.5 animate-pulse" />
+              Loading players...
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {players.map((p, i) => (
+                <li
+                  key={p.id?.toString() ?? i}
+                  className="flex items-center gap-2 text-sm"
+                >
+                  <CheckCircle2
+                    className="w-4 h-4"
+                    style={{ color: "var(--neon-green)" }}
+                  />
+                  <span className="font-semibold text-foreground">
+                    {p.name}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <RoomChat actor={actor} roomCode={joinedRoom.roomCode} />
+
+        <div className="flex items-center gap-2 text-xs text-muted-foreground/60 justify-center animate-pulse">
+          <Clock className="w-3.5 h-3.5" />
+          Waiting for host to start the race...
+        </div>
+
+        <Button
+          onClick={() => onJoined(joinedRoom.roomCode, joinedRoom.playerName)}
+          className="w-full h-11 font-black tracking-widest"
+          style={{ background: "oklch(0.55 0.22 260)", color: "#fff" }}
+        >
+          <Flag className="w-4 h-4 mr-2" />
+          I'M READY — START RACE
+        </Button>
+
+        <Button
+          variant="ghost"
+          onClick={onBack}
+          className="text-muted-foreground"
+        >
+          <ArrowLeft className="w-4 h-4 mr-2" />
+          Leave Room
+        </Button>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
@@ -1298,15 +1631,16 @@ export default function App() {
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ duration: 0.6, ease: "easeOut" }}
               >
-                <h1
-                  className="text-7xl font-black tracking-tight glow-green"
+                <img
+                  src="/assets/uploads/IMG_1124-1.jpeg"
+                  alt="F1_M"
+                  className="mx-auto"
                   style={{
-                    color: "var(--neon-green)",
-                    letterSpacing: "0.06em",
+                    maxWidth: "320px",
+                    width: "100%",
+                    filter: "drop-shadow(0 0 18px var(--neon-green))",
                   }}
-                >
-                  F1
-                </h1>
+                />
                 <p className="text-muted-foreground text-xs mt-1 tracking-widest uppercase">
                   3-Lap Circuit Race
                 </p>
@@ -1430,15 +1764,16 @@ export default function App() {
             <div className="flex flex-col items-center w-full max-w-sm px-4 pt-4 pb-8 gap-5">
               {/* Title */}
               <div className="text-center">
-                <h1
-                  className="text-7xl font-black tracking-tight glow-green"
+                <img
+                  src="/assets/uploads/IMG_1124-1.jpeg"
+                  alt="F1_M"
+                  className="mx-auto"
                   style={{
-                    color: "var(--neon-green)",
-                    letterSpacing: "0.06em",
+                    maxWidth: "260px",
+                    width: "100%",
+                    filter: "drop-shadow(0 0 14px var(--neon-green))",
                   }}
-                >
-                  F1
-                </h1>
+                />
               </div>
 
               {/* Race Finished card */}
@@ -1462,7 +1797,7 @@ export default function App() {
                   {score.toString().padStart(4, "0")} pts
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Finished {positionLabel} — F1 Championship Points
+                  Finished {positionLabel} — F1_M Championship Points
                 </p>
 
                 {!scoreSubmitted ? (
@@ -1592,15 +1927,16 @@ export default function App() {
             <div className="flex flex-col items-center w-full max-w-sm px-4 pt-4 pb-8 gap-5">
               {/* Header */}
               <div className="text-center">
-                <h1
-                  className="text-5xl font-black tracking-tight glow-green"
+                <img
+                  src="/assets/uploads/IMG_1124-1.jpeg"
+                  alt="F1_M"
+                  className="mx-auto"
                   style={{
-                    color: "var(--neon-green)",
-                    letterSpacing: "0.06em",
+                    maxWidth: "220px",
+                    width: "100%",
+                    filter: "drop-shadow(0 0 12px var(--neon-green))",
                   }}
-                >
-                  F1
-                </h1>
+                />
               </div>
 
               <AnimatePresence mode="wait">

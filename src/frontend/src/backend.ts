@@ -100,6 +100,12 @@ export interface Player {
     score?: bigint;
     finishTime?: bigint;
 }
+export interface ChatMessage {
+    sender: string;
+    isReaction: boolean;
+    message: string;
+    timestamp: bigint;
+}
 export interface ScoreEntry {
     name: string;
     score: bigint;
@@ -119,6 +125,7 @@ export interface backendInterface {
     createRoom(): Promise<string>;
     getCallerUserProfile(): Promise<UserProfile | null>;
     getCallerUserRole(): Promise<UserRole>;
+    getChatMessages(roomCode: string): Promise<Array<ChatMessage>>;
     getLeaderboard(): Promise<Array<ScoreEntry>>;
     getPersonalBest(): Promise<ScoreEntry | null>;
     getRoomPlayers(roomCode: string): Promise<Array<Player>>;
@@ -128,6 +135,8 @@ export interface backendInterface {
     isRoomActive(code: string): Promise<boolean>;
     joinRoom(code: string, playerName: string): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
+    sendChatMessage(roomCode: string, message: string): Promise<void>;
+    sendReaction(roomCode: string, reaction: string): Promise<void>;
     submitRaceScore(roomCode: string, score: bigint, finishTime: bigint): Promise<void>;
     submitScore(name: string, score: bigint): Promise<void>;
 }
@@ -216,6 +225,20 @@ export class Backend implements backendInterface {
         } else {
             const result = await this.actor.getCallerUserRole();
             return from_candid_UserRole_n4(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async getChatMessages(arg0: string): Promise<Array<ChatMessage>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getChatMessages(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getChatMessages(arg0);
+            return result;
         }
     }
     async getLeaderboard(): Promise<Array<ScoreEntry>> {
@@ -341,6 +364,34 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.saveCallerUserProfile(arg0);
+            return result;
+        }
+    }
+    async sendChatMessage(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.sendChatMessage(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.sendChatMessage(arg0, arg1);
+            return result;
+        }
+    }
+    async sendReaction(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.sendReaction(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.sendReaction(arg0, arg1);
             return result;
         }
     }

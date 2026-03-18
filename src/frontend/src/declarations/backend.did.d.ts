@@ -10,6 +10,12 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
+export interface ChatMessage {
+  'sender' : string,
+  'isReaction' : boolean,
+  'message' : string,
+  'timestamp' : bigint,
+}
 export interface Player {
   'id' : Principal,
   'name' : string,
@@ -33,6 +39,7 @@ export interface _SERVICE {
   'createRoom' : ActorMethod<[], string>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
   'getCallerUserRole' : ActorMethod<[], UserRole>,
+  'getChatMessages' : ActorMethod<[string], Array<ChatMessage>>,
   'getLeaderboard' : ActorMethod<[], Array<ScoreEntry>>,
   'getPersonalBest' : ActorMethod<[], [] | [ScoreEntry]>,
   'getRoomPlayers' : ActorMethod<[string], Array<Player>>,
@@ -42,6 +49,8 @@ export interface _SERVICE {
   'isRoomActive' : ActorMethod<[string], boolean>,
   'joinRoom' : ActorMethod<[string, string], undefined>,
   'saveCallerUserProfile' : ActorMethod<[UserProfile], undefined>,
+  'sendChatMessage' : ActorMethod<[string, string], undefined>,
+  'sendReaction' : ActorMethod<[string, string], undefined>,
   'submitRaceScore' : ActorMethod<[string, bigint, bigint], undefined>,
   'submitScore' : ActorMethod<[string, bigint], undefined>,
 }
