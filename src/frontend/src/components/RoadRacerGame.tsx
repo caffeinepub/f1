@@ -6,6 +6,9 @@ import {
   CANVAS_W,
   type CarData,
   F1_POINTS,
+  FUEL_CAN_POSITIONS_STAGE1,
+  FUEL_CAN_POSITIONS_STAGE2,
+  type FuelCan,
   type GamePhase,
   type Point,
   type RaceState,
@@ -18,21 +21,22 @@ import {
 // mutable module-level waypoints – updated by F1Game based on stage prop
 let _WP: Point[] = WAYPOINTS;
 let N = _WP.length;
+let _FUEL_CANS: { x: number; y: number }[] = FUEL_CAN_POSITIONS_STAGE1;
 const HALF_TRACK = TRACK_WIDTH / 2;
 const COUNTDOWN_FRAMES = 180; // 3 seconds at 60fps
 const FINISH_DISPLAY_FRAMES = 120; // 2 seconds
 const PLAYER_MAX_SPEED = 6.8; // same for Stage 1 and Stage 2
 
-// Starting grid positions (near new WP[0] = {1280, 160}), spacing scaled 1.6x
+// Starting grid positions (scaled 3.4x near WP[0])
 const GRID_POSITIONS: Point[] = [
-  { x: 3680, y: 456 },
-  { x: 3680, y: 500 },
-  { x: 3520, y: 454 },
-  { x: 3520, y: 498 },
-  { x: 3360, y: 452 },
-  { x: 3360, y: 496 },
+  { x: 4169, y: 517 },
+  { x: 4169, y: 566 },
+  { x: 3988, y: 514 },
+  { x: 3988, y: 564 },
+  { x: 3807, y: 512 },
+  { x: 3807, y: 562 },
 ];
-const START_HEADING = Math.atan2(480 - 456, 3840 - 3680); // toward WP[0] from grid
+const START_HEADING = Math.atan2(544 - 517, 4351 - 4169); // toward WP[0] from grid
 
 function createInitialState(): RaceState {
   const player: CarData = {
@@ -69,6 +73,13 @@ function createInitialState(): RaceState {
     finishPos: 0,
   }));
 
+  const fuelCans: FuelCan[] = _FUEL_CANS.map((pos) => ({
+    x: pos.x,
+    y: pos.y,
+    collected: false,
+    respawnTimer: 0,
+  }));
+
   return {
     phase: "idle",
     cars: [player, ...ais],
@@ -78,6 +89,8 @@ function createInitialState(): RaceState {
     playerPos: 1,
     currentLap: 1,
     finalPoints: 0,
+    fuelLevel: 100,
+    fuelCans,
   };
 }
 
@@ -1189,6 +1202,61 @@ function drawMinimap(ctx: CanvasRenderingContext2D, cars: CarData[]) {
   ctx.fillText("MAP", mx + mw - 24, my + mh - 4);
 }
 
+// ── Draw fuel cans on track ───────────────────────────────────────────────────
+function drawFuelCans(
+  ctx: CanvasRenderingContext2D,
+  fuelCans: FuelCan[],
+  camX: number,
+  camY: number,
+  frame: number,
+) {
+  for (const can of fuelCans) {
+    if (can.collected) continue;
+    const sx = can.x - camX;
+    const sy = can.y - camY;
+    // Cull off-screen
+    if (sx < -40 || sx > CANVAS_W + 40 || sy < -40 || sy > CANVAS_H + 40)
+      continue;
+
+    const pulse = 0.7 + 0.3 * Math.sin(frame * 0.08);
+    ctx.save();
+
+    // Glow ring
+    ctx.beginPath();
+    ctx.arc(sx, sy, 18 * pulse, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 220, 0, ${0.12 * pulse})`;
+    ctx.fill();
+
+    // Outer glow
+    ctx.shadowColor = "#ffdd00";
+    ctx.shadowBlur = 14 * pulse;
+
+    // Canister body (yellow rectangle)
+    ctx.fillStyle = "#ffcc00";
+    ctx.beginPath();
+    ctx.roundRect(sx - 9, sy - 11, 18, 18, 3);
+    ctx.fill();
+
+    // Canister handle
+    ctx.fillStyle = "#e6a800";
+    ctx.fillRect(sx - 4, sy - 15, 8, 5);
+
+    // Red fuel stripe
+    ctx.fillStyle = "#ff2200";
+    ctx.fillRect(sx - 9, sy - 3, 18, 4);
+
+    // "F" label
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#1a0000";
+    ctx.font = "bold 8px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("F", sx, sy + 4);
+
+    ctx.restore();
+  }
+}
+
 // ── Draw HUD ─────────────────────────────────────────────────────────────────
 function drawHUD(
   ctx: CanvasRenderingContext2D,
@@ -1197,6 +1265,7 @@ function drawHUD(
   boostTimer: number,
   lapFlash: number,
 ) {
+  const fuelLevel = state.fuelLevel ?? 100;
   const player = state.cars[0];
   const currentLap = Math.min(player.laps + 1, TOTAL_LAPS);
   const playerPos = state.sortedIdx.findIndex((i) => i === 0) + 1;
@@ -1332,6 +1401,68 @@ function drawHUD(
     ctx.fillText("FINAL LAP", CANVAS_W / 2, 170);
     ctx.shadowBlur = 0;
     ctx.restore();
+  }
+
+  // ── FUEL GAUGE (bottom-right) ──
+  {
+    const gx = CANVAS_W - 52;
+    const gy = CANVAS_H - 160;
+    const gw = 20;
+    const gh = 100;
+
+    // Panel background
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.beginPath();
+    ctx.roundRect(gx - 8, gy - 24, gw + 16, gh + 40, 8);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,220,0,0.45)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // "FUEL" label
+    ctx.font = "bold 9px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = fuelLevel < 20 ? "#ff4444" : "rgba(255,220,0,0.9)";
+    ctx.fillText("FUEL", gx + gw / 2, gy - 10);
+
+    // Bar background
+    ctx.fillStyle = "rgba(255,255,255,0.1)";
+    ctx.beginPath();
+    ctx.roundRect(gx, gy, gw, gh, 4);
+    ctx.fill();
+
+    // Bar fill
+    const fillH = Math.max(0, Math.min(1, fuelLevel / 100)) * gh;
+    const barColor =
+      fuelLevel > 50 ? "#00cc44" : fuelLevel > 25 ? "#ffcc00" : "#ff3300";
+    ctx.fillStyle = barColor;
+    if (fuelLevel > 0) {
+      ctx.beginPath();
+      ctx.roundRect(gx, gy + gh - fillH, gw, fillH, 4);
+      ctx.fill();
+    }
+
+    // Percentage
+    ctx.font = "bold 8px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillText(`${Math.round(fuelLevel)}%`, gx + gw / 2, gy + gh + 12);
+
+    // LOW FUEL warning (flashing)
+    if (fuelLevel < 20) {
+      const flashAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 180);
+      ctx.save();
+      ctx.globalAlpha = flashAlpha;
+      ctx.textAlign = "center";
+      ctx.font = "bold 11px monospace";
+      ctx.fillStyle = "#ff3300";
+      ctx.shadowColor = "#ff3300";
+      ctx.shadowBlur = 12;
+      ctx.fillText("LOW", CANVAS_W / 2, CANVAS_H - 210);
+      ctx.fillText("FUEL!", CANVAS_W / 2, CANVAS_H - 196);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
   }
 }
 
@@ -1718,152 +1849,147 @@ function useBackgroundMusic() {
   const playBeat = (ctx: AudioContext, master: GainNode, time: number) => {
     const beat = beatCountRef.current;
     beatCountRef.current = (beat + 1) % 16;
-    const bd = 60 / 175; // beat duration at 175 BPM
+    const BPM_138 = 138;
+    const bd = 60 / BPM_138; // beat duration ~0.435s
 
-    // --- Kick on every beat (4-on-the-floor techno style) ---
+    // --- KICK DRUM: low sine 60Hz, sharp attack, fast decay every beat ---
     const kick = ctx.createOscillator();
     const kickGain = ctx.createGain();
     kick.type = "sine";
-    kick.frequency.setValueAtTime(200, time);
-    kick.frequency.exponentialRampToValueAtTime(35, time + 0.1);
-    kickGain.gain.setValueAtTime(1.1, time);
-    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
+    kick.frequency.setValueAtTime(80, time);
+    kick.frequency.exponentialRampToValueAtTime(40, time + 0.08);
+    kickGain.gain.setValueAtTime(1.2, time);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.22);
     kick.connect(kickGain);
     kickGain.connect(master);
     kick.start(time);
-    kick.stop(time + 0.2);
+    kick.stop(time + 0.25);
 
-    // --- Open hi-hat on offbeats ---
-    const makeHat = (t: number, open: boolean) => {
-      const buf = ctx.createBuffer(
-        1,
-        ctx.sampleRate * (open ? 0.15 : 0.04),
-        ctx.sampleRate,
-      );
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const filt = ctx.createBiquadFilter();
-      filt.type = "highpass";
-      filt.frequency.value = open ? 8000 : 10000;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(open ? 0.18 : 0.12, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.14 : 0.03));
-      src.connect(filt);
-      filt.connect(g);
-      g.connect(master);
-      src.start(t);
-    };
-    makeHat(time + bd * 0.5, true); // offbeat open hat
-    makeHat(time + bd * 0.25, false); // 16th closed hat
-    makeHat(time + bd * 0.75, false);
-
-    // --- Snare / clap on beats 2 & 4 (every other beat) ---
-    if (beat % 2 === 1) {
-      const snareBuf = ctx.createBuffer(
-        1,
-        ctx.sampleRate * 0.12,
-        ctx.sampleRate,
-      );
-      const sd = snareBuf.getChannelData(0);
-      for (let i = 0; i < sd.length; i++) sd[i] = Math.random() * 2 - 1;
-      const snare = ctx.createBufferSource();
-      snare.buffer = snareBuf;
-      const sf = ctx.createBiquadFilter();
-      sf.type = "bandpass";
-      sf.frequency.value = 3000;
-      sf.Q.value = 0.8;
-      const sg = ctx.createGain();
-      sg.gain.setValueAtTime(0.55, time);
-      sg.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
-      snare.connect(sf);
-      sf.connect(sg);
-      sg.connect(master);
-      snare.start(time);
-      // Clap layer
-      const clapBuf = ctx.createBuffer(
-        1,
-        ctx.sampleRate * 0.05,
-        ctx.sampleRate,
-      );
-      const cd = clapBuf.getChannelData(0);
-      for (let i = 0; i < cd.length; i++) cd[i] = Math.random() * 2 - 1;
-      const clap = ctx.createBufferSource();
-      clap.buffer = clapBuf;
-      const cf = ctx.createBiquadFilter();
-      cf.type = "bandpass";
-      cf.frequency.value = 1800;
-      const cg = ctx.createGain();
-      cg.gain.setValueAtTime(0.3, time + 0.008);
-      cg.gain.exponentialRampToValueAtTime(0.001, time + 0.06);
-      clap.connect(cf);
-      cf.connect(cg);
-      cg.connect(master);
-      clap.start(time + 0.008);
+    // --- STRING PAD: sawtooth heavily filtered, slow attack (every 4 beats) ---
+    if (beat % 4 === 0) {
+      const padFreqs = [
+        [220, 277, 330],
+        [196, 247, 294],
+        [165, 208, 247],
+        [185, 233, 277],
+      ];
+      const chordIdx = Math.floor(beat / 4) % 4;
+      for (const freq of padFreqs[chordIdx]) {
+        const pad = ctx.createOscillator();
+        const padFilter = ctx.createBiquadFilter();
+        const padGain = ctx.createGain();
+        pad.type = "sawtooth";
+        pad.frequency.value = freq;
+        padFilter.type = "lowpass";
+        padFilter.frequency.value = 400;
+        padFilter.Q.value = 1.5;
+        padGain.gain.setValueAtTime(0.0, time);
+        padGain.gain.linearRampToValueAtTime(0.055, time + bd * 1.5);
+        padGain.gain.linearRampToValueAtTime(0.04, time + bd * 3.8);
+        padGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 4.5);
+        pad.connect(padFilter);
+        padFilter.connect(padGain);
+        padGain.connect(master);
+        pad.start(time);
+        pad.stop(time + bd * 4.6);
+      }
     }
 
-    // --- Pumping bass line (deep house/techno) ---
-    const bassPattern = [
-      110, 110, 82.4, 98, 110, 73.4, 82.4, 98, 110, 110, 82.4, 98, 73.4, 73.4,
-      82.4, 110,
-    ];
-    const bassFreq = bassPattern[beat % bassPattern.length];
+    // --- SYNTH BRASS HIT: square wave 220Hz every 2 beats ---
+    if (beat % 2 === 0) {
+      const brass = ctx.createOscillator();
+      const brassFilter = ctx.createBiquadFilter();
+      const brassGain = ctx.createGain();
+      brass.type = "square";
+      brass.frequency.value = beat % 4 === 0 ? 220 : 165;
+      brassFilter.type = "lowpass";
+      brassFilter.frequency.value = 1200;
+      brassFilter.Q.value = 2;
+      brassGain.gain.setValueAtTime(0.28, time);
+      brassGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.6);
+      brass.connect(brassFilter);
+      brassFilter.connect(brassGain);
+      brassGain.connect(master);
+      brass.start(time);
+      brass.stop(time + bd * 0.65);
+    }
+
+    // --- BASS PULSE: sine 55Hz on every beat ---
     const bass = ctx.createOscillator();
     const bassGain = ctx.createGain();
-    const bassFilter = ctx.createBiquadFilter();
-    bass.type = "sawtooth";
-    bass.frequency.value = bassFreq;
-    bassFilter.type = "lowpass";
-    bassFilter.frequency.value = 500;
-    bassFilter.Q.value = 4;
-    bassGain.gain.setValueAtTime(0.65, time);
-    bassGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.85);
-    bass.connect(bassFilter);
-    bassFilter.connect(bassGain);
+    bass.type = "sine";
+    bass.frequency.value = beat % 4 < 2 ? 55 : 41.2;
+    bassGain.gain.setValueAtTime(0.55, time);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.75);
+    bass.connect(bassGain);
     bassGain.connect(master);
     bass.start(time);
-    bass.stop(time + bd * 0.9);
+    bass.stop(time + bd * 0.8);
 
-    // --- Synth lead melody (arpeggiated) ---
+    // --- SYNTH LEAD: sawtooth 880Hz filtered, dramatic melody with delay feedback ---
     const leadPattern = [
-      440, 0, 523, 587, 440, 494, 0, 523, 659, 0, 587, 523, 440, 0, 494, 659,
+      880, 0, 880, 1047, 880, 0, 659, 784, 880, 1047, 880, 0, 784, 659, 0, 784,
     ];
     const leadFreq = leadPattern[beat % leadPattern.length];
     if (leadFreq > 0) {
       const lead = ctx.createOscillator();
-      const leadGain = ctx.createGain();
       const leadFilter = ctx.createBiquadFilter();
-      lead.type = "square";
+      const leadGain = ctx.createGain();
+      const delayNode = ctx.createDelay(0.5);
+      const delayFeedback = ctx.createGain();
+      const delayGain = ctx.createGain();
+
+      lead.type = "sawtooth";
       lead.frequency.value = leadFreq;
-      leadFilter.type = "bandpass";
-      leadFilter.frequency.value = leadFreq * 2;
-      leadFilter.Q.value = 2;
-      leadGain.gain.setValueAtTime(0.22, time);
-      leadGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.7);
+      leadFilter.type = "lowpass";
+      leadFilter.frequency.value = 2800;
+      leadFilter.Q.value = 3;
+      leadGain.gain.setValueAtTime(0.18, time);
+      leadGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 0.85);
+
+      // Delay (reverb-like)
+      delayNode.delayTime.value = bd * 0.375; // dotted-8th delay
+      delayFeedback.gain.value = 0.28;
+      delayGain.gain.value = 0.12;
+
       lead.connect(leadFilter);
       leadFilter.connect(leadGain);
       leadGain.connect(master);
+      // Delay chain
+      leadGain.connect(delayNode);
+      delayNode.connect(delayFeedback);
+      delayFeedback.connect(delayNode);
+      delayNode.connect(delayGain);
+      delayGain.connect(master);
+
       lead.start(time);
-      lead.stop(time + bd * 0.75);
+      lead.stop(time + bd * 0.9);
     }
 
-    // --- Pad chord (every 4 beats, ambient background) ---
-    if (beat % 4 === 0) {
-      const padFreqs = [220, 277, 330];
-      for (const freq of padFreqs) {
-        const pad = ctx.createOscillator();
-        const padGain = ctx.createGain();
-        pad.type = "sine";
-        pad.frequency.value = freq;
-        padGain.gain.setValueAtTime(0.06, time);
-        padGain.gain.linearRampToValueAtTime(0.08, time + bd * 2);
-        padGain.gain.exponentialRampToValueAtTime(0.001, time + bd * 4);
-        pad.connect(padGain);
-        padGain.connect(master);
-        pad.start(time);
-        pad.stop(time + bd * 4.1);
-      }
+    // --- ORCHESTRAL SNARE (every 2nd beat) ---
+    if (beat % 2 === 1) {
+      const snareBuf = ctx.createBuffer(
+        1,
+        ctx.sampleRate * 0.15,
+        ctx.sampleRate,
+      );
+      const sd = snareBuf.getChannelData(0);
+      for (let i = 0; i < sd.length; i++)
+        sd[i] =
+          (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.04));
+      const snare = ctx.createBufferSource();
+      snare.buffer = snareBuf;
+      const sf = ctx.createBiquadFilter();
+      sf.type = "bandpass";
+      sf.frequency.value = 2400;
+      sf.Q.value = 1.2;
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(0.45, time);
+      sg.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
+      snare.connect(sf);
+      sf.connect(sg);
+      sg.connect(master);
+      snare.start(time);
     }
   };
 
@@ -1912,7 +2038,7 @@ function useBackgroundMusic() {
 
     startEngine(ctx, master);
 
-    const BPM = 175;
+    const BPM = 138;
     const beatDur = 60 / BPM;
     let nextBeat = ctx.currentTime + 0.05;
 
@@ -2068,6 +2194,8 @@ export default function F1Game({
   // Update module-level waypoints based on stage
   _WP = stage === 2 ? WAYPOINTS_STAGE2 : WAYPOINTS;
   N = _WP.length;
+  _FUEL_CANS =
+    stage === 2 ? FUEL_CAN_POSITIONS_STAGE2 : FUEL_CAN_POSITIONS_STAGE1;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<RaceState>(createInitialState());
   const keysRef = useRef<Set<string>>(new Set());
@@ -2079,6 +2207,7 @@ export default function F1Game({
   const logoImgRef = useRef<HTMLImageElement | null>(null);
   const lapFlashRef = useRef<number>(0); // frames since last lap completed (for flash animation)
   const prevLapsRef = useRef<number>(0); // previous player lap count to detect increments
+  const frameCountRef = useRef<number>(0); // global frame counter for animations
 
   useEffect(() => {
     const img = new window.Image();
@@ -2135,6 +2264,7 @@ export default function F1Game({
   const fpsRef = useRef<number>(60);
   const _lastFrameTimeRef = useRef<number>(0);
   const [fpsDisplay, setFpsDisplay] = useState(60);
+  const [isFuelOut, setIsFuelOut] = useState(false);
 
   // Boost effect refs
   const boostTimerRef = useRef<number>(0);
@@ -2146,6 +2276,19 @@ export default function F1Game({
     z: 0,
     x: 0,
   });
+  const [canvasScale, setCanvasScale] = useState(1);
+
+  // Scale canvas to fit screen (iPad fix)
+  useEffect(() => {
+    const updateScale = () => {
+      const scaleX = window.innerWidth / CANVAS_W;
+      const scaleY = window.innerHeight / CANVAS_H;
+      setCanvasScale(Math.min(scaleX, scaleY, 1));
+    };
+    updateScale();
+    window.addEventListener("resize", updateScale);
+    return () => window.removeEventListener("resize", updateScale);
+  }, []);
 
   // Track both startX and startY for 2D joystick drag
   const wheelDragRef = useRef<{
@@ -2384,6 +2527,33 @@ export default function F1Game({
         );
         constrainToTrack(player, _WP);
 
+        // ── FUEL SYSTEM ──
+        // Drain fuel while moving
+        if (Math.abs(player.speed) > 0.1) {
+          s.fuelLevel = Math.max(0, s.fuelLevel - 0.04);
+        }
+        // Trigger game over if out of fuel
+        if (s.fuelLevel <= 0) {
+          s.phase = "fuelout";
+          stopMusic();
+          setIsFuelOut(true);
+        }
+        // Fuel can collection and respawn
+        for (const can of s.fuelCans) {
+          if (can.collected) {
+            if (can.respawnTimer > 0) can.respawnTimer--;
+            else can.collected = false;
+          } else {
+            const fdx = player.x - can.x;
+            const fdy = player.y - can.y;
+            if (fdx * fdx + fdy * fdy < 45 * 45) {
+              can.collected = true;
+              can.respawnTimer = 480;
+              s.fuelLevel = Math.min(100, s.fuelLevel + 30);
+            }
+          }
+        }
+
         // Tyre screech: triggered by steering/braking at speed
         {
           const spd = Math.abs(player.speed);
@@ -2459,6 +2629,7 @@ export default function F1Game({
       }
 
       // ── DRAW ──
+      frameCountRef.current++;
       const camX = player.x - CANVAS_W / 2;
       const camY = player.y - CANVAS_H / 2;
 
@@ -2466,6 +2637,9 @@ export default function F1Game({
       drawAudience(ctx, camX, camY, logoImgRef.current);
       drawTrack(ctx, camX, camY);
       drawStartLine(ctx, camX, camY);
+      if (s.phase === "racing" || s.phase === "countdown") {
+        drawFuelCans(ctx, s.fuelCans, camX, camY, frameCountRef.current);
+      }
 
       // Draw cars (sorted back-to-front by Y for visual layering)
       const drawOrder = [...s.cars].sort((a, b) => a.y - b.y);
@@ -2514,6 +2688,39 @@ export default function F1Game({
         ctx.shadowBlur = 0;
       }
 
+      if (s.phase === "fuelout") {
+        // Dark overlay
+        ctx.fillStyle = "rgba(0,0,0,0.72)";
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        // GAME OVER title
+        ctx.textAlign = "center";
+        ctx.font = "bold 72px monospace";
+        ctx.fillStyle = "#ff2222";
+        ctx.shadowColor = "#ff0000";
+        ctx.shadowBlur = 32;
+        ctx.fillText("GAME OVER", CANVAS_W / 2, CANVAS_H / 2 - 100);
+        // Subtitle
+        ctx.font = "bold 26px monospace";
+        ctx.fillStyle = "#ffdddd";
+        ctx.shadowBlur = 12;
+        ctx.fillText("You ran out of fuel!", CANVAS_W / 2, CANVAS_H / 2 - 40);
+        // Score and lap
+        ctx.font = "22px monospace";
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.shadowBlur = 0;
+        ctx.fillText(
+          `Score: ${s.finalPoints}`,
+          CANVAS_W / 2,
+          CANVAS_H / 2 + 10,
+        );
+        ctx.fillText(
+          `Lap: ${s.currentLap} / 3`,
+          CANVAS_W / 2,
+          CANVAS_H / 2 + 42,
+        );
+        ctx.shadowBlur = 0;
+      }
+
       // Update FPS display every ~30 frames
       if (Math.round(timestamp / 500) !== Math.round((timestamp - 16) / 500)) {
         setFpsDisplay(fpsRef.current);
@@ -2539,907 +2746,991 @@ export default function F1Game({
   };
 
   return (
-    <div className="relative" data-ocid="game.canvas_target">
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_W}
-        height={CANVAS_H}
-        style={{
-          display: "block",
-          border: "1px solid rgba(0,255,128,0.15)",
-          borderRadius: 8,
-          boxShadow: "0 0 40px rgba(0,255,128,0.08), 0 0 80px rgba(0,0,0,0.8)",
-          touchAction: "none",
-        }}
-      />
-
-      {/* Top-right controls */}
+    <div
+      style={{
+        width: "100vw",
+        height: "100dvh",
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#000",
+        overflow: "hidden",
+      }}
+    >
       <div
+        className="relative"
+        data-ocid="game.canvas_target"
         style={{
-          position: "absolute",
-          top: 8,
-          right: 8,
-          display: "flex",
-          gap: 6,
-          zIndex: 20,
+          width: CANVAS_W,
+          height: CANVAS_H,
+          transform: `scale(${canvasScale})`,
+          transformOrigin: "center center",
+          flexShrink: 0,
         }}
       >
-        {/* Settings Button */}
-        <button
-          type="button"
-          onClick={() => setShowSettings(true)}
-          data-ocid="game.settings_button"
-          aria-label="Open settings"
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_W}
+          height={CANVAS_H}
           style={{
-            background: "rgba(0,10,5,0.75)",
-            border: "1px solid rgba(0,255,128,0.35)",
-            borderRadius: "50%",
-            width: 36,
-            height: 36,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            fontSize: 18,
-            backdropFilter: "blur(4px)",
-            boxShadow: "0 0 10px rgba(0,255,128,0.15)",
-            color: "#fff",
-            transition: "border-color 0.2s, box-shadow 0.2s",
+            display: "block",
+            border: "1px solid rgba(0,255,128,0.15)",
+            borderRadius: 8,
+            boxShadow:
+              "0 0 40px rgba(0,255,128,0.08), 0 0 80px rgba(0,0,0,0.8)",
+            touchAction: "none",
           }}
-        >
-          ⚙️
-        </button>
+        />
 
-        {/* Mute/Unmute Button */}
-        <button
-          type="button"
-          onClick={toggleMute}
-          data-ocid="game.toggle"
-          aria-label={isMuted ? "Unmute music" : "Mute music"}
-          style={{
-            background: "rgba(0,10,5,0.75)",
-            border: "1px solid rgba(0,255,128,0.35)",
-            borderRadius: "50%",
-            width: 36,
-            height: 36,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            fontSize: 18,
-            backdropFilter: "blur(4px)",
-            boxShadow: "0 0 10px rgba(0,255,128,0.15)",
-            color: "#fff",
-            transition: "border-color 0.2s, box-shadow 0.2s",
-          }}
-        >
-          {isMuted ? "🔇" : "🔊"}
-        </button>
-      </div>
-
-      {/* Pause Button (only during racing) */}
-      {stateRef.current.phase === "racing" && (
-        <button
-          type="button"
-          onTouchStart={(e) => {
-            e.preventDefault();
-            togglePause();
-          }}
-          onClick={togglePause}
-          data-ocid="game.pause_button"
-          aria-label={isPaused ? "Resume game" : "Pause game"}
+        {/* Top-right controls */}
+        <div
           style={{
             position: "absolute",
             top: 8,
-            left: 8,
-            background: "rgba(0,10,5,0.75)",
-            border: `1px solid ${isPaused ? "rgba(255,200,0,0.7)" : "rgba(0,255,128,0.35)"}`,
-            borderRadius: "50%",
-            width: 36,
-            height: 36,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            fontSize: 18,
-            backdropFilter: "blur(4px)",
-            boxShadow: `0 0 10px ${isPaused ? "rgba(255,200,0,0.3)" : "rgba(0,255,128,0.15)"}`,
-            color: "#fff",
-            zIndex: 20,
-            transition: "border-color 0.2s, box-shadow 0.2s",
-          }}
-        >
-          {isPaused ? "▶" : "⏸"}
-        </button>
-      )}
-
-      {/* FPS Counter */}
-      {settings.showFps && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 200,
             right: 8,
-            background: "rgba(0,0,0,0.6)",
-            color:
-              fpsDisplay >= 55
-                ? "#00ff80"
-                : fpsDisplay >= 30
-                  ? "#ffdd00"
-                  : "#ff4444",
-            fontFamily: "monospace",
-            fontSize: 11,
-            padding: "2px 6px",
-            borderRadius: 4,
-            zIndex: 20,
-            pointerEvents: "none",
-            border: "1px solid rgba(255,255,255,0.1)",
-          }}
-        >
-          {fpsDisplay} FPS
-        </div>
-      )}
-
-      {/* Pause Overlay */}
-      {isPaused && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(0,5,2,0.82)",
-            backdropFilter: "blur(3px)",
             display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 24,
-            zIndex: 30,
-            borderRadius: 8,
+            gap: 6,
+            zIndex: 20,
           }}
         >
-          {/* PAUSED title */}
-          <div
+          {/* Settings Button */}
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            data-ocid="game.settings_button"
+            aria-label="Open settings"
             style={{
-              fontFamily: "monospace",
-              fontSize: 52,
-              fontWeight: 900,
-              color: "#ffd700",
-              textShadow:
-                "0 0 30px rgba(255,215,0,0.8), 0 0 60px rgba(255,215,0,0.4)",
-              letterSpacing: 8,
+              background: "rgba(0,10,5,0.75)",
+              border: "1px solid rgba(0,255,128,0.35)",
+              borderRadius: "50%",
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: 18,
+              backdropFilter: "blur(4px)",
+              boxShadow: "0 0 10px rgba(0,255,128,0.15)",
+              color: "#fff",
+              transition: "border-color 0.2s, box-shadow 0.2s",
             }}
           >
-            ⏸ PAUSED
-          </div>
-          <div
+            ⚙️
+          </button>
+
+          {/* Mute/Unmute Button */}
+          <button
+            type="button"
+            onClick={toggleMute}
+            data-ocid="game.toggle"
+            aria-label={isMuted ? "Unmute music" : "Mute music"}
             style={{
-              fontFamily: "monospace",
-              fontSize: 13,
-              color: "rgba(0,255,128,0.5)",
-              letterSpacing: 2,
+              background: "rgba(0,10,5,0.75)",
+              border: "1px solid rgba(0,255,128,0.35)",
+              borderRadius: "50%",
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: 18,
+              backdropFilter: "blur(4px)",
+              boxShadow: "0 0 10px rgba(0,255,128,0.15)",
+              color: "#fff",
+              transition: "border-color 0.2s, box-shadow 0.2s",
             }}
           >
-            ESC / P to resume
-          </div>
+            {isMuted ? "🔇" : "🔊"}
+          </button>
+        </div>
+
+        {/* Pause Button (only during racing) */}
+        {stateRef.current.phase === "racing" && (
+          <button
+            type="button"
+            onTouchStart={(e) => {
+              e.preventDefault();
+              togglePause();
+            }}
+            onClick={togglePause}
+            data-ocid="game.pause_button"
+            aria-label={isPaused ? "Resume game" : "Pause game"}
+            style={{
+              position: "absolute",
+              top: 8,
+              left: 8,
+              background: "rgba(0,10,5,0.75)",
+              border: `1px solid ${isPaused ? "rgba(255,200,0,0.7)" : "rgba(0,255,128,0.35)"}`,
+              borderRadius: "50%",
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: 18,
+              backdropFilter: "blur(4px)",
+              boxShadow: `0 0 10px ${isPaused ? "rgba(255,200,0,0.3)" : "rgba(0,255,128,0.15)"}`,
+              color: "#fff",
+              zIndex: 20,
+              transition: "border-color 0.2s, box-shadow 0.2s",
+            }}
+          >
+            {isPaused ? "▶" : "⏸"}
+          </button>
+        )}
+
+        {/* FPS Counter */}
+        {settings.showFps && (
           <div
             style={{
+              position: "absolute",
+              bottom: 200,
+              right: 8,
+              background: "rgba(0,0,0,0.6)",
+              color:
+                fpsDisplay >= 55
+                  ? "#00ff80"
+                  : fpsDisplay >= 30
+                    ? "#ffdd00"
+                    : "#ff4444",
+              fontFamily: "monospace",
+              fontSize: 11,
+              padding: "2px 6px",
+              borderRadius: 4,
+              zIndex: 20,
+              pointerEvents: "none",
+              border: "1px solid rgba(255,255,255,0.1)",
+            }}
+          >
+            {fpsDisplay} FPS
+          </div>
+        )}
+
+        {/* Pause Overlay */}
+        {isPaused && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,5,2,0.82)",
+              backdropFilter: "blur(3px)",
               display: "flex",
               flexDirection: "column",
-              gap: 12,
-              marginTop: 8,
               alignItems: "center",
+              justifyContent: "center",
+              gap: 24,
+              zIndex: 30,
+              borderRadius: 8,
             }}
           >
-            <div style={{ display: "flex", gap: 16 }}>
+            {/* PAUSED title */}
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 52,
+                fontWeight: 900,
+                color: "#ffd700",
+                textShadow:
+                  "0 0 30px rgba(255,215,0,0.8), 0 0 60px rgba(255,215,0,0.4)",
+                letterSpacing: 8,
+              }}
+            >
+              ⏸ PAUSED
+            </div>
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 13,
+                color: "rgba(0,255,128,0.5)",
+                letterSpacing: 2,
+              }}
+            >
+              ESC / P to resume
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                marginTop: 8,
+                alignItems: "center",
+              }}
+            >
+              <div style={{ display: "flex", gap: 16 }}>
+                <button
+                  type="button"
+                  onTouchStart={(e) => {
+                    e.preventDefault();
+                    togglePause();
+                  }}
+                  onClick={togglePause}
+                  style={{
+                    background: "rgba(0,255,128,0.12)",
+                    border: "1.5px solid rgba(0,255,128,0.7)",
+                    borderRadius: 8,
+                    color: "#00ff80",
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    fontSize: 16,
+                    padding: "10px 32px",
+                    cursor: "pointer",
+                    letterSpacing: 2,
+                    boxShadow: "0 0 20px rgba(0,255,128,0.2)",
+                    transition: "background 0.2s, box-shadow 0.2s",
+                  }}
+                >
+                  ▶ RESUME
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    isPausedRef.current = false;
+                    setIsPaused(false);
+                    stateRef.current.phase = "idle";
+                    stateRef.current = createInitialState();
+                    finishCountRef.current = { val: 0 };
+                    prevLapsRef.current = 0;
+                    lapFlashRef.current = 0;
+                    boostTimerRef.current = 0;
+                    prevSortedIdxRef.current = [0, 1, 2, 3, 4, 5];
+                    stopMusic();
+                    onStateChange("idle");
+                  }}
+                  style={{
+                    background: "rgba(255,60,60,0.1)",
+                    border: "1.5px solid rgba(255,60,60,0.5)",
+                    borderRadius: 8,
+                    color: "#ff6060",
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    fontSize: 16,
+                    padding: "10px 32px",
+                    cursor: "pointer",
+                    letterSpacing: 2,
+                    transition: "background 0.2s",
+                  }}
+                >
+                  ✕ QUIT
+                </button>
+              </div>
               <button
                 type="button"
-                onTouchStart={(e) => {
-                  e.preventDefault();
-                  togglePause();
-                }}
-                onClick={togglePause}
+                onClick={() => setShowLeaderboard(true)}
                 style={{
-                  background: "rgba(0,255,128,0.12)",
-                  border: "1.5px solid rgba(0,255,128,0.7)",
+                  background: "rgba(255,215,0,0.08)",
+                  border: "1.5px solid rgba(255,215,0,0.4)",
                   borderRadius: 8,
-                  color: "#00ff80",
+                  color: "#ffd700",
                   fontFamily: "monospace",
                   fontWeight: 700,
-                  fontSize: 16,
-                  padding: "10px 32px",
-                  cursor: "pointer",
-                  letterSpacing: 2,
-                  boxShadow: "0 0 20px rgba(0,255,128,0.2)",
-                  transition: "background 0.2s, box-shadow 0.2s",
-                }}
-              >
-                ▶ RESUME
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  isPausedRef.current = false;
-                  setIsPaused(false);
-                  stateRef.current.phase = "idle";
-                  stateRef.current = createInitialState();
-                  finishCountRef.current = { val: 0 };
-                  prevLapsRef.current = 0;
-                  lapFlashRef.current = 0;
-                  boostTimerRef.current = 0;
-                  prevSortedIdxRef.current = [0, 1, 2, 3, 4, 5];
-                  stopMusic();
-                  onStateChange("idle");
-                }}
-                style={{
-                  background: "rgba(255,60,60,0.1)",
-                  border: "1.5px solid rgba(255,60,60,0.5)",
-                  borderRadius: 8,
-                  color: "#ff6060",
-                  fontFamily: "monospace",
-                  fontWeight: 700,
-                  fontSize: 16,
-                  padding: "10px 32px",
+                  fontSize: 14,
+                  padding: "8px 28px",
                   cursor: "pointer",
                   letterSpacing: 2,
                   transition: "background 0.2s",
                 }}
               >
-                ✕ QUIT
+                🏆 LEADERBOARD
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowLeaderboard(true)}
-              style={{
-                background: "rgba(255,215,0,0.08)",
-                border: "1.5px solid rgba(255,215,0,0.4)",
-                borderRadius: 8,
-                color: "#ffd700",
-                fontFamily: "monospace",
-                fontWeight: 700,
-                fontSize: 14,
-                padding: "8px 28px",
-                cursor: "pointer",
-                letterSpacing: 2,
-                transition: "background 0.2s",
-              }}
-            >
-              🏆 LEADERBOARD
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Settings Modal */}
-      {showSettings && (
-        <div
-          data-ocid="settings.dialog"
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(0,5,2,0.88)",
-            backdropFilter: "blur(6px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 40,
-            borderRadius: 8,
-          }}
-        >
+        {/* Settings Modal */}
+        {showSettings && (
           <div
+            data-ocid="settings.dialog"
             style={{
-              background: "rgba(5,18,10,0.95)",
-              border: "1.5px solid rgba(0,255,128,0.4)",
-              borderRadius: 16,
-              padding: "32px 36px",
-              minWidth: 320,
-              maxWidth: 400,
-              boxShadow:
-                "0 0 60px rgba(0,255,128,0.12), 0 0 120px rgba(0,0,0,0.8)",
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,5,2,0.88)",
+              backdropFilter: "blur(6px)",
               display: "flex",
-              flexDirection: "column",
-              gap: 24,
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 40,
+              borderRadius: 8,
             }}
           >
-            {/* Header */}
             <div
               style={{
+                background: "rgba(5,18,10,0.95)",
+                border: "1.5px solid rgba(0,255,128,0.4)",
+                borderRadius: 16,
+                padding: "32px 36px",
+                minWidth: 320,
+                maxWidth: 400,
+                boxShadow:
+                  "0 0 60px rgba(0,255,128,0.12), 0 0 120px rgba(0,0,0,0.8)",
                 display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
+                flexDirection: "column",
+                gap: 24,
               }}
             >
+              {/* Header */}
               <div
                 style={{
-                  fontFamily: "monospace",
-                  fontSize: 22,
-                  fontWeight: 900,
-                  color: "#00ff80",
-                  letterSpacing: 3,
-                  textShadow: "0 0 16px rgba(0,255,128,0.5)",
-                }}
-              >
-                ⚙ SETTINGS
-              </div>
-              <button
-                type="button"
-                data-ocid="settings.close_button"
-                onClick={() => setShowSettings(false)}
-                aria-label="Close settings"
-                style={{
-                  background: "transparent",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  borderRadius: "50%",
-                  width: 30,
-                  height: 30,
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  color: "rgba(255,255,255,0.6)",
-                  fontSize: 16,
-                  transition: "border-color 0.2s, color 0.2s",
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Music Volume */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <label
-                htmlFor="music-vol"
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: 12,
-                  color: "rgba(0,255,128,0.8)",
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                }}
-              >
-                🎵 Music Volume — {settings.musicVol}%
-              </label>
-              <input
-                id="music-vol"
-                type="range"
-                min={0}
-                max={100}
-                value={settings.musicVol}
-                data-ocid="settings.music_volume.input"
-                onChange={(e) =>
-                  updateSettings({ musicVol: Number(e.target.value) })
-                }
-                style={{
-                  width: "100%",
-                  accentColor: "#00ff80",
-                  cursor: "pointer",
-                }}
-              />
-            </div>
-
-            {/* SFX Volume */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <label
-                htmlFor="sfx-vol"
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: 12,
-                  color: "rgba(0,255,128,0.8)",
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                }}
-              >
-                🔊 SFX Volume — {settings.sfxVol}%
-              </label>
-              <input
-                id="sfx-vol"
-                type="range"
-                min={0}
-                max={100}
-                value={settings.sfxVol}
-                data-ocid="settings.sfx_volume.input"
-                onChange={(e) =>
-                  updateSettings({ sfxVol: Number(e.target.value) })
-                }
-                style={{
-                  width: "100%",
-                  accentColor: "#00ff80",
-                  cursor: "pointer",
-                }}
-              />
-            </div>
-
-            {/* Show FPS Toggle */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <label
-                htmlFor="show-fps"
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: 12,
-                  color: "rgba(0,255,128,0.8)",
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                }}
-              >
-                📊 Show FPS Counter
-              </label>
-              <button
-                id="show-fps"
-                type="button"
-                role="switch"
-                aria-checked={settings.showFps}
-                data-ocid="settings.fps.toggle"
-                onClick={() => updateSettings({ showFps: !settings.showFps })}
-                style={{
-                  width: 48,
-                  height: 26,
-                  borderRadius: 13,
-                  background: settings.showFps
-                    ? "rgba(0,255,128,0.3)"
-                    : "rgba(255,255,255,0.08)",
-                  border: `1.5px solid ${settings.showFps ? "rgba(0,255,128,0.7)" : "rgba(255,255,255,0.2)"}`,
-                  position: "relative",
-                  cursor: "pointer",
-                  transition: "background 0.2s, border-color 0.2s",
-                  padding: 0,
+                  justifyContent: "space-between",
                 }}
               >
                 <div
                   style={{
-                    position: "absolute",
-                    top: 3,
-                    left: settings.showFps ? 24 : 3,
-                    width: 18,
-                    height: 18,
-                    borderRadius: "50%",
-                    background: settings.showFps
-                      ? "#00ff80"
-                      : "rgba(255,255,255,0.4)",
-                    transition: "left 0.2s, background 0.2s",
-                    boxShadow: settings.showFps
-                      ? "0 0 8px rgba(0,255,128,0.6)"
-                      : "none",
-                  }}
-                />
-              </button>
-            </div>
-
-            {/* Close button */}
-            <button
-              type="button"
-              onClick={() => setShowSettings(false)}
-              style={{
-                background: "rgba(0,255,128,0.12)",
-                border: "1.5px solid rgba(0,255,128,0.5)",
-                borderRadius: 8,
-                color: "#00ff80",
-                fontFamily: "monospace",
-                fontWeight: 700,
-                fontSize: 14,
-                padding: "10px 0",
-                cursor: "pointer",
-                letterSpacing: 2,
-                marginTop: 4,
-                transition: "background 0.2s",
-              }}
-            >
-              CLOSE
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── F1 Steering Controller Overlay ── */}
-      <div
-        className="absolute bottom-0 left-0 right-0 flex items-end justify-center"
-        style={{
-          padding: "12px 16px 16px",
-          pointerEvents: "none",
-          userSelect: "none",
-        }}
-      >
-        {/* Steering Wheel — full 2D joystick (center) */}
-        <div
-          style={{
-            pointerEvents: "auto",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 6,
-            userSelect: "none",
-            WebkitUserSelect: "none",
-          }}
-        >
-          {/* Direction arrows hint above wheel */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr",
-              gridTemplateRows: "1fr 1fr",
-              width: 100,
-              gap: 2,
-              textAlign: "center",
-              fontFamily: "monospace",
-              fontSize: 13,
-              fontWeight: 700,
-              userSelect: "none",
-            }}
-          >
-            <span
-              style={{
-                gridColumn: 2,
-                color: wheelRotation.x < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
-                textShadow: wheelRotation.x < -5 ? "0 0 8px #00ff80" : "none",
-              }}
-            >
-              ▲
-            </span>
-            <span
-              style={{
-                gridColumn: 1,
-                gridRow: 2,
-                color: wheelRotation.z < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
-                textShadow: wheelRotation.z < -5 ? "0 0 8px #00ff80" : "none",
-              }}
-            >
-              ◀
-            </span>
-            <span
-              style={{
-                gridColumn: 2,
-                gridRow: 2,
-                color: wheelRotation.x > 5 ? "#ff4444" : "rgba(0,255,128,0.3)",
-                textShadow: wheelRotation.x > 5 ? "0 0 8px #ff4444" : "none",
-              }}
-            >
-              ▼
-            </span>
-            <span
-              style={{
-                gridColumn: 3,
-                gridRow: 2,
-                color: wheelRotation.z > 5 ? "#00ff80" : "rgba(0,255,128,0.3)",
-                textShadow: wheelRotation.z > 5 ? "0 0 8px #00ff80" : "none",
-              }}
-            >
-              ▶
-            </span>
-          </div>
-
-          {/* Wheel drag zone */}
-          <div
-            role="slider"
-            aria-label="Steering wheel — drag in any direction to control"
-            aria-valuenow={wheelRotation.z}
-            aria-valuemin={-30}
-            aria-valuemax={30}
-            tabIndex={0}
-            data-ocid="game.canvas_target"
-            style={{
-              cursor: "grab",
-              touchAction: "none",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 0,
-              userSelect: "none",
-              WebkitUserSelect: "none",
-            }}
-            onPointerDown={handleWheelPointerDown}
-            onPointerMove={handleWheelPointerMove}
-            onPointerUp={handleWheelPointerUp}
-            onPointerCancel={handleWheelPointerUp}
-          >
-            {/* Wheel background plate */}
-            <div
-              style={{
-                background: "rgba(0,10,5,0.78)",
-                border: `1.5px solid rgba(0,255,128,${Math.abs(wheelRotation.z) > 5 || Math.abs(wheelRotation.x) > 5 ? "0.75" : "0.35"})`,
-                borderRadius: "50%",
-                padding: 14,
-                backdropFilter: "blur(6px)",
-                boxShadow: `0 0 20px ${getWheelGlowColor()}, inset 0 0 12px rgba(0,0,0,0.5)`,
-                transition: "box-shadow 0.1s ease, border-color 0.1s ease",
-              }}
-            >
-              <SteeringWheelSVG rotation={wheelRotation} />
-            </div>
-          </div>
-
-          {/* Direction label below wheel */}
-          <div
-            style={{
-              fontSize: 12,
-              fontFamily: "monospace",
-              color:
-                directionHint === "▼ BRAKE"
-                  ? "rgba(255,100,100,0.85)"
-                  : directionHint === "STEER"
-                    ? "rgba(0,255,128,0.4)"
-                    : "rgba(0,255,128,0.85)",
-              letterSpacing: 1.5,
-              textTransform: "uppercase",
-              textShadow:
-                directionHint !== "STEER"
-                  ? directionHint === "▼ BRAKE"
-                    ? "0 0 6px rgba(255,60,60,0.6)"
-                    : "0 0 6px rgba(0,255,128,0.5)"
-                  : "none",
-              transition: "color 0.1s, text-shadow 0.1s",
-              minWidth: 100,
-              textAlign: "center",
-            }}
-          >
-            {directionHint}
-          </div>
-        </div>
-      </div>
-
-      {/* Leaderboard Modal */}
-      {showLeaderboard && (
-        <div
-          data-ocid="leaderboard.dialog"
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(0,5,2,0.92)",
-            backdropFilter: "blur(8px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 50,
-            borderRadius: 8,
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowLeaderboard(false);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && e.target === e.currentTarget)
-              setShowLeaderboard(false);
-          }}
-          tabIndex={-1}
-        >
-          <div
-            style={{
-              background: "rgba(3,12,6,0.97)",
-              border: "1.5px solid rgba(0,255,128,0.35)",
-              borderRadius: 16,
-              padding: "28px 32px",
-              minWidth: 340,
-              maxWidth: 440,
-              maxHeight: "85vh",
-              overflowY: "auto",
-              boxShadow:
-                "0 0 80px rgba(0,255,128,0.08), 0 0 160px rgba(0,0,0,0.9)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 16,
-            }}
-          >
-            {/* Header */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: 20,
-                  fontWeight: 900,
-                  color: "#ffd700",
-                  letterSpacing: 3,
-                  textShadow: "0 0 20px rgba(255,215,0,0.6)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                }}
-              >
-                🏆 HIGH SCORES
-              </div>
-              <button
-                type="button"
-                data-ocid="leaderboard.close_button"
-                onClick={() => setShowLeaderboard(false)}
-                aria-label="Close leaderboard"
-                style={{
-                  background: "transparent",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  borderRadius: "50%",
-                  width: 30,
-                  height: 30,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  color: "rgba(255,255,255,0.6)",
-                  fontSize: 16,
-                  transition: "border-color 0.2s",
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Personal Best */}
-            {personalBest && (
-              <div
-                style={{
-                  background: "rgba(0,255,128,0.06)",
-                  border: "1px solid rgba(0,255,128,0.25)",
-                  borderRadius: 8,
-                  padding: "8px 14px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <span
-                  style={{
                     fontFamily: "monospace",
-                    fontSize: 11,
-                    color: "rgba(0,255,128,0.6)",
-                    letterSpacing: 2,
-                  }}
-                >
-                  ⭐ YOUR BEST
-                </span>
-                <span
-                  style={{
-                    fontFamily: "monospace",
-                    fontSize: 13,
+                    fontSize: 22,
                     fontWeight: 900,
                     color: "#00ff80",
+                    letterSpacing: 3,
+                    textShadow: "0 0 16px rgba(0,255,128,0.5)",
                   }}
                 >
-                  {personalBest.name} —{" "}
-                  {String(personalBest.score).padStart(6, "0")} pts
-                </span>
+                  ⚙ SETTINGS
+                </div>
+                <button
+                  type="button"
+                  data-ocid="settings.close_button"
+                  onClick={() => setShowSettings(false)}
+                  aria-label="Close settings"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: "50%",
+                    width: 30,
+                    height: 30,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    color: "rgba(255,255,255,0.6)",
+                    fontSize: 16,
+                    transition: "border-color 0.2s, color 0.2s",
+                  }}
+                >
+                  ✕
+                </button>
               </div>
-            )}
 
-            {/* Scores list */}
-            {lbLoading ? (
+              {/* Music Volume */}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {[1, 2, 3, 4, 5].map((k) => (
-                  <div
-                    key={k}
-                    style={{
-                      height: 44,
-                      borderRadius: 8,
-                      background: "rgba(255,255,255,0.04)",
-                      animation: "pulse 1.5s ease-in-out infinite",
-                    }}
-                  />
-                ))}
-              </div>
-            ) : leaderboard.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "32px 0" }}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>🏆</div>
-                <div
+                <label
+                  htmlFor="music-vol"
                   style={{
                     fontFamily: "monospace",
                     fontSize: 12,
-                    color: "rgba(255,255,255,0.3)",
+                    color: "rgba(0,255,128,0.8)",
                     letterSpacing: 2,
+                    textTransform: "uppercase",
                   }}
                 >
-                  NO SCORES YET
-                </div>
+                  🎵 Music Volume — {settings.musicVol}%
+                </label>
+                <input
+                  id="music-vol"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={settings.musicVol}
+                  data-ocid="settings.music_volume.input"
+                  onChange={(e) =>
+                    updateSettings({ musicVol: Number(e.target.value) })
+                  }
+                  style={{
+                    width: "100%",
+                    accentColor: "#00ff80",
+                    cursor: "pointer",
+                  }}
+                />
+              </div>
+
+              {/* SFX Volume */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <label
+                  htmlFor="sfx-vol"
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    color: "rgba(0,255,128,0.8)",
+                    letterSpacing: 2,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  🔊 SFX Volume — {settings.sfxVol}%
+                </label>
+                <input
+                  id="sfx-vol"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={settings.sfxVol}
+                  data-ocid="settings.sfx_volume.input"
+                  onChange={(e) =>
+                    updateSettings({ sfxVol: Number(e.target.value) })
+                  }
+                  style={{
+                    width: "100%",
+                    accentColor: "#00ff80",
+                    cursor: "pointer",
+                  }}
+                />
+              </div>
+
+              {/* Show FPS Toggle */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <label
+                  htmlFor="show-fps"
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    color: "rgba(0,255,128,0.8)",
+                    letterSpacing: 2,
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  📊 Show FPS Counter
+                </label>
+                <button
+                  id="show-fps"
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.showFps}
+                  data-ocid="settings.fps.toggle"
+                  onClick={() => updateSettings({ showFps: !settings.showFps })}
+                  style={{
+                    width: 48,
+                    height: 26,
+                    borderRadius: 13,
+                    background: settings.showFps
+                      ? "rgba(0,255,128,0.3)"
+                      : "rgba(255,255,255,0.08)",
+                    border: `1.5px solid ${settings.showFps ? "rgba(0,255,128,0.7)" : "rgba(255,255,255,0.2)"}`,
+                    position: "relative",
+                    cursor: "pointer",
+                    transition: "background 0.2s, border-color 0.2s",
+                    padding: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: 3,
+                      left: settings.showFps ? 24 : 3,
+                      width: 18,
+                      height: 18,
+                      borderRadius: "50%",
+                      background: settings.showFps
+                        ? "#00ff80"
+                        : "rgba(255,255,255,0.4)",
+                      transition: "left 0.2s, background 0.2s",
+                      boxShadow: settings.showFps
+                        ? "0 0 8px rgba(0,255,128,0.6)"
+                        : "none",
+                    }}
+                  />
+                </button>
+              </div>
+
+              {/* Close button */}
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                style={{
+                  background: "rgba(0,255,128,0.12)",
+                  border: "1.5px solid rgba(0,255,128,0.5)",
+                  borderRadius: 8,
+                  color: "#00ff80",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                  fontSize: 14,
+                  padding: "10px 0",
+                  cursor: "pointer",
+                  letterSpacing: 2,
+                  marginTop: 4,
+                  transition: "background 0.2s",
+                }}
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── F1 Steering Controller Overlay ── */}
+        <div
+          className="absolute bottom-0 left-0 right-0 flex items-end justify-center"
+          style={{
+            padding: "12px 16px 16px",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {/* Steering Wheel — full 2D joystick (center) */}
+          <div
+            style={{
+              pointerEvents: "auto",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 6,
+              userSelect: "none",
+              WebkitUserSelect: "none",
+            }}
+          >
+            {/* Direction arrows hint above wheel */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gridTemplateRows: "1fr 1fr",
+                width: 100,
+                gap: 2,
+                textAlign: "center",
+                fontFamily: "monospace",
+                fontSize: 13,
+                fontWeight: 700,
+                userSelect: "none",
+              }}
+            >
+              <span
+                style={{
+                  gridColumn: 2,
+                  color:
+                    wheelRotation.x < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                  textShadow: wheelRotation.x < -5 ? "0 0 8px #00ff80" : "none",
+                }}
+              >
+                ▲
+              </span>
+              <span
+                style={{
+                  gridColumn: 1,
+                  gridRow: 2,
+                  color:
+                    wheelRotation.z < -5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                  textShadow: wheelRotation.z < -5 ? "0 0 8px #00ff80" : "none",
+                }}
+              >
+                ◀
+              </span>
+              <span
+                style={{
+                  gridColumn: 2,
+                  gridRow: 2,
+                  color:
+                    wheelRotation.x > 5 ? "#ff4444" : "rgba(0,255,128,0.3)",
+                  textShadow: wheelRotation.x > 5 ? "0 0 8px #ff4444" : "none",
+                }}
+              >
+                ▼
+              </span>
+              <span
+                style={{
+                  gridColumn: 3,
+                  gridRow: 2,
+                  color:
+                    wheelRotation.z > 5 ? "#00ff80" : "rgba(0,255,128,0.3)",
+                  textShadow: wheelRotation.z > 5 ? "0 0 8px #00ff80" : "none",
+                }}
+              >
+                ▶
+              </span>
+            </div>
+
+            {/* Wheel drag zone */}
+            <div
+              role="slider"
+              aria-label="Steering wheel — drag in any direction to control"
+              aria-valuenow={wheelRotation.z}
+              aria-valuemin={-30}
+              aria-valuemax={30}
+              tabIndex={0}
+              data-ocid="game.canvas_target"
+              style={{
+                cursor: "grab",
+                touchAction: "none",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 0,
+                userSelect: "none",
+                WebkitUserSelect: "none",
+              }}
+              onPointerDown={handleWheelPointerDown}
+              onPointerMove={handleWheelPointerMove}
+              onPointerUp={handleWheelPointerUp}
+              onPointerCancel={handleWheelPointerUp}
+            >
+              {/* Wheel background plate */}
+              <div
+                style={{
+                  background: "rgba(0,10,5,0.78)",
+                  border: `1.5px solid rgba(0,255,128,${Math.abs(wheelRotation.z) > 5 || Math.abs(wheelRotation.x) > 5 ? "0.75" : "0.35"})`,
+                  borderRadius: "50%",
+                  padding: 14,
+                  backdropFilter: "blur(6px)",
+                  boxShadow: `0 0 20px ${getWheelGlowColor()}, inset 0 0 12px rgba(0,0,0,0.5)`,
+                  transition: "box-shadow 0.1s ease, border-color 0.1s ease",
+                }}
+              >
+                <SteeringWheelSVG rotation={wheelRotation} />
+              </div>
+            </div>
+
+            {/* Direction label below wheel */}
+            <div
+              style={{
+                fontSize: 12,
+                fontFamily: "monospace",
+                color:
+                  directionHint === "▼ BRAKE"
+                    ? "rgba(255,100,100,0.85)"
+                    : directionHint === "STEER"
+                      ? "rgba(0,255,128,0.4)"
+                      : "rgba(0,255,128,0.85)",
+                letterSpacing: 1.5,
+                textTransform: "uppercase",
+                textShadow:
+                  directionHint !== "STEER"
+                    ? directionHint === "▼ BRAKE"
+                      ? "0 0 6px rgba(255,60,60,0.6)"
+                      : "0 0 6px rgba(0,255,128,0.5)"
+                    : "none",
+                transition: "color 0.1s, text-shadow 0.1s",
+                minWidth: 100,
+                textAlign: "center",
+              }}
+            >
+              {directionHint}
+            </div>
+          </div>
+        </div>
+
+        {/* Leaderboard Modal */}
+        {showLeaderboard && (
+          <div
+            data-ocid="leaderboard.dialog"
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,5,2,0.92)",
+              backdropFilter: "blur(8px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 50,
+              borderRadius: 8,
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowLeaderboard(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && e.target === e.currentTarget)
+                setShowLeaderboard(false);
+            }}
+            tabIndex={-1}
+          >
+            <div
+              style={{
+                background: "rgba(3,12,6,0.97)",
+                border: "1.5px solid rgba(0,255,128,0.35)",
+                borderRadius: 16,
+                padding: "28px 32px",
+                minWidth: 340,
+                maxWidth: 440,
+                maxHeight: "85vh",
+                overflowY: "auto",
+                boxShadow:
+                  "0 0 80px rgba(0,255,128,0.08), 0 0 160px rgba(0,0,0,0.9)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 16,
+              }}
+            >
+              {/* Header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
                 <div
                   style={{
                     fontFamily: "monospace",
-                    fontSize: 11,
-                    color: "rgba(255,255,255,0.18)",
-                    marginTop: 6,
+                    fontSize: 20,
+                    fontWeight: 900,
+                    color: "#ffd700",
+                    letterSpacing: 3,
+                    textShadow: "0 0 20px rgba(255,215,0,0.6)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
                   }}
                 >
-                  Be the first to set a record!
+                  🏆 HIGH SCORES
                 </div>
+                <button
+                  type="button"
+                  data-ocid="leaderboard.close_button"
+                  onClick={() => setShowLeaderboard(false)}
+                  aria-label="Close leaderboard"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: "50%",
+                    width: 30,
+                    height: 30,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    color: "rgba(255,255,255,0.6)",
+                    fontSize: 16,
+                    transition: "border-color 0.2s",
+                  }}
+                >
+                  ✕
+                </button>
               </div>
-            ) : (
-              <ol
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  listStyle: "none",
-                  padding: 0,
-                  margin: 0,
-                }}
-              >
-                {leaderboard.slice(0, 10).map((entry, i) => {
-                  const medals = ["🥇", "🥈", "🥉"];
-                  const colors = ["#ffd700", "#c0c0c0", "#cd7f32"];
-                  const glows = [
-                    "rgba(255,215,0,0.3)",
-                    "rgba(192,192,192,0.2)",
-                    "rgba(205,127,50,0.2)",
-                  ];
-                  const bgs = [
-                    "rgba(255,215,0,0.08)",
-                    "rgba(192,192,192,0.06)",
-                    "rgba(205,127,50,0.06)",
-                  ];
-                  const borders = [
-                    "rgba(255,215,0,0.35)",
-                    "rgba(192,192,192,0.25)",
-                    "rgba(205,127,50,0.25)",
-                  ];
-                  const isTop3 = i < 3;
-                  return (
-                    <li
-                      key={`lb-${entry.name}-${i}`}
-                      data-ocid={`leaderboard.item.${i + 1}`}
+
+              {/* Personal Best */}
+              {personalBest && (
+                <div
+                  style={{
+                    background: "rgba(0,255,128,0.06)",
+                    border: "1px solid rgba(0,255,128,0.25)",
+                    borderRadius: 8,
+                    padding: "8px 14px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: "rgba(0,255,128,0.6)",
+                      letterSpacing: 2,
+                    }}
+                  >
+                    ⭐ YOUR BEST
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 13,
+                      fontWeight: 900,
+                      color: "#00ff80",
+                    }}
+                  >
+                    {personalBest.name} —{" "}
+                    {String(personalBest.score).padStart(6, "0")} pts
+                  </span>
+                </div>
+              )}
+
+              {/* Scores list */}
+              {lbLoading ? (
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 8 }}
+                >
+                  {[1, 2, 3, 4, 5].map((k) => (
+                    <div
+                      key={k}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 12,
-                        padding: "10px 14px",
+                        height: 44,
                         borderRadius: 8,
-                        background: isTop3 ? bgs[i] : "rgba(255,255,255,0.02)",
-                        border: `1px solid ${isTop3 ? borders[i] : "rgba(255,255,255,0.07)"}`,
-                        boxShadow: isTop3 ? `0 0 12px ${glows[i]}` : "none",
+                        background: "rgba(255,255,255,0.04)",
+                        animation: "pulse 1.5s ease-in-out infinite",
                       }}
-                    >
-                      <div
+                    />
+                  ))}
+                </div>
+              ) : leaderboard.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "32px 0" }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>🏆</div>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 12,
+                      color: "rgba(255,255,255,0.3)",
+                      letterSpacing: 2,
+                    }}
+                  >
+                    NO SCORES YET
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: "rgba(255,255,255,0.18)",
+                      marginTop: 6,
+                    }}
+                  >
+                    Be the first to set a record!
+                  </div>
+                </div>
+              ) : (
+                <ol
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                  }}
+                >
+                  {leaderboard.slice(0, 10).map((entry, i) => {
+                    const medals = ["🥇", "🥈", "🥉"];
+                    const colors = ["#ffd700", "#c0c0c0", "#cd7f32"];
+                    const glows = [
+                      "rgba(255,215,0,0.3)",
+                      "rgba(192,192,192,0.2)",
+                      "rgba(205,127,50,0.2)",
+                    ];
+                    const bgs = [
+                      "rgba(255,215,0,0.08)",
+                      "rgba(192,192,192,0.06)",
+                      "rgba(205,127,50,0.06)",
+                    ];
+                    const borders = [
+                      "rgba(255,215,0,0.35)",
+                      "rgba(192,192,192,0.25)",
+                      "rgba(205,127,50,0.25)",
+                    ];
+                    const isTop3 = i < 3;
+                    return (
+                      <li
+                        key={`lb-${entry.name}-${i}`}
+                        data-ocid={`leaderboard.item.${i + 1}`}
                         style={{
-                          width: 28,
-                          textAlign: "center",
-                          fontSize: isTop3 ? 18 : 12,
-                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.3)",
-                          fontFamily: "monospace",
-                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          padding: "10px 14px",
+                          borderRadius: 8,
+                          background: isTop3
+                            ? bgs[i]
+                            : "rgba(255,255,255,0.02)",
+                          border: `1px solid ${isTop3 ? borders[i] : "rgba(255,255,255,0.07)"}`,
+                          boxShadow: isTop3 ? `0 0 12px ${glows[i]}` : "none",
                         }}
                       >
-                        {isTop3 ? medals[i] : `${i + 1}`}
-                      </div>
-                      <div
-                        style={{
-                          flex: 1,
-                          fontFamily: "monospace",
-                          fontSize: 13,
-                          fontWeight: 700,
-                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.8)",
-                          letterSpacing: 1,
-                          textShadow: isTop3 ? `0 0 8px ${glows[i]}` : "none",
-                        }}
-                      >
-                        {entry.name}
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: "monospace",
-                          fontSize: 14,
-                          fontWeight: 900,
-                          color: isTop3 ? colors[i] : "rgba(255,255,255,0.6)",
-                          letterSpacing: 1,
-                        }}
-                      >
-                        {String(entry.score).padStart(6, "0")}
-                        <span
-                          style={{ fontSize: 9, marginLeft: 3, opacity: 0.6 }}
+                        <div
+                          style={{
+                            width: 28,
+                            textAlign: "center",
+                            fontSize: isTop3 ? 18 : 12,
+                            color: isTop3 ? colors[i] : "rgba(255,255,255,0.3)",
+                            fontFamily: "monospace",
+                            fontWeight: 700,
+                          }}
                         >
-                          pts
-                        </span>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
+                          {isTop3 ? medals[i] : `${i + 1}`}
+                        </div>
+                        <div
+                          style={{
+                            flex: 1,
+                            fontFamily: "monospace",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            color: isTop3 ? colors[i] : "rgba(255,255,255,0.8)",
+                            letterSpacing: 1,
+                            textShadow: isTop3 ? `0 0 8px ${glows[i]}` : "none",
+                          }}
+                        >
+                          {entry.name}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: "monospace",
+                            fontSize: 14,
+                            fontWeight: 900,
+                            color: isTop3 ? colors[i] : "rgba(255,255,255,0.6)",
+                            letterSpacing: 1,
+                          }}
+                        >
+                          {String(entry.score).padStart(6, "0")}
+                          <span
+                            style={{ fontSize: 9, marginLeft: 3, opacity: 0.6 }}
+                          >
+                            pts
+                          </span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Fuel-out GAME OVER overlay */}
+        {isFuelOut && (
+          <div
+            data-ocid="gameover.dialog"
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.0)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 60,
+            }}
+          >
+            <button
+              type="button"
+              data-ocid="gameover.primary_button"
+              onClick={() => {
+                stateRef.current = createInitialState();
+                finishCountRef.current = { val: 0 };
+                prevLapsRef.current = 0;
+                lapFlashRef.current = 0;
+                boostTimerRef.current = 0;
+                prevSortedIdxRef.current = [0, 1, 2, 3, 4, 5];
+                isPausedRef.current = false;
+                setIsPaused(false);
+                setIsFuelOut(false);
+                stateRef.current.phase = "countdown";
+                startMusic();
+              }}
+              style={{
+                marginTop: 280,
+                background: "rgba(255,30,30,0.18)",
+                border: "2px solid #ff4444",
+                borderRadius: 10,
+                color: "#ff6666",
+                fontFamily: "monospace",
+                fontWeight: 900,
+                fontSize: 22,
+                padding: "14px 48px",
+                cursor: "pointer",
+                letterSpacing: 3,
+                boxShadow: "0 0 30px rgba(255,0,0,0.4)",
+                transition: "background 0.2s",
+              }}
+            >
+              🔄 TRY AGAIN
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

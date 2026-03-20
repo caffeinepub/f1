@@ -21,7 +21,19 @@ export interface CarData {
   finishPos: number;
 }
 
-export type GamePhase = "idle" | "countdown" | "racing" | "finished";
+export type GamePhase =
+  | "idle"
+  | "countdown"
+  | "racing"
+  | "finished"
+  | "fuelout";
+
+export interface FuelCan {
+  x: number;
+  y: number;
+  collected: boolean;
+  respawnTimer: number;
+}
 
 export interface RaceState {
   phase: GamePhase;
@@ -32,38 +44,40 @@ export interface RaceState {
   playerPos: number;
   currentLap: number;
   finalPoints: number;
+  fuelLevel: number; // 0-100
+  fuelCans: FuelCan[];
 }
 
 export const TOTAL_LAPS = 3;
-export const TRACK_WIDTH = 430;
+export const TRACK_WIDTH = 490;
 export const CANVAS_W = 640;
 export const CANVAS_H = 800;
 export const F1_POINTS = [25, 18, 15, 12, 10, 8];
 
-// Waypoints scaled 3x — smaller track for tighter, more challenging racing
+// Waypoints scaled ~3.4x — track size slightly increased for better racing
 export const WAYPOINTS: Point[] = [
-  { x: 3840, y: 480 },
-  { x: 5040, y: 480 },
-  { x: 6144, y: 672 },
-  { x: 6864, y: 1344 },
-  { x: 7104, y: 2208 },
-  { x: 7008, y: 3072 },
-  { x: 6624, y: 3840 },
-  { x: 5760, y: 4320 },
-  { x: 4800, y: 4560 },
-  { x: 4080, y: 4512 },
-  { x: 3648, y: 4272 },
-  { x: 3360, y: 4656 },
-  { x: 2784, y: 4848 },
-  { x: 1920, y: 4896 },
-  { x: 1056, y: 4704 },
-  { x: 576, y: 4080 },
-  { x: 480, y: 3168 },
-  { x: 576, y: 2208 },
-  { x: 960, y: 1392 },
-  { x: 1728, y: 840 },
-  { x: 2736, y: 528 },
-  { x: 3264, y: 456 },
+  { x: 4351, y: 544 },
+  { x: 5710, y: 544 },
+  { x: 6961, y: 761 },
+  { x: 7777, y: 1523 },
+  { x: 8049, y: 2502 },
+  { x: 7940, y: 3481 },
+  { x: 7505, y: 4351 },
+  { x: 6526, y: 4895 },
+  { x: 5438, y: 5166 },
+  { x: 4623, y: 5112 },
+  { x: 4133, y: 4840 },
+  { x: 3807, y: 5275 },
+  { x: 3154, y: 5493 },
+  { x: 2175, y: 5547 },
+  { x: 1196, y: 5330 },
+  { x: 653, y: 4623 },
+  { x: 544, y: 3589 },
+  { x: 653, y: 2502 },
+  { x: 1088, y: 1577 },
+  { x: 1958, y: 952 },
+  { x: 3100, y: 598 },
+  { x: 3698, y: 517 },
 ];
 
 export const AI_TEAM_DATA = [
@@ -74,33 +88,53 @@ export const AI_TEAM_DATA = [
   { name: "SAI", color: "#005AFF", glowColor: "#4d8cff" },
 ];
 
-// Stage 2 waypoints — more complex circuit with hairpins, chicanes, and S-curves (3x scale)
+// Stage 2 waypoints — more complex circuit (scaled ~3.4x)
 export const WAYPOINTS_STAGE2: Point[] = [
-  { x: 3600, y: 450 },
-  { x: 4800, y: 450 },
-  { x: 6000, y: 450 },
-  { x: 6750, y: 750 },
-  { x: 7050, y: 1350 },
-  { x: 7050, y: 1950 },
-  { x: 6750, y: 2550 },
-  { x: 6000, y: 2850 },
-  { x: 5400, y: 3000 },
-  { x: 4800, y: 2850 },
-  { x: 4200, y: 3150 },
-  { x: 3600, y: 3600 },
-  { x: 3000, y: 4050 },
-  { x: 2100, y: 4350 },
-  { x: 1200, y: 4500 },
-  { x: 450, y: 4200 },
-  { x: 300, y: 3600 },
-  { x: 450, y: 3000 },
-  { x: 750, y: 2400 },
-  { x: 600, y: 1800 },
-  { x: 900, y: 1350 },
-  { x: 600, y: 900 },
-  { x: 900, y: 525 },
-  { x: 1800, y: 420 },
-  { x: 2700, y: 420 },
-  { x: 3150, y: 435 },
-  { x: 3375, y: 443 },
+  { x: 4079, y: 510 },
+  { x: 5438, y: 510 },
+  { x: 6798, y: 510 },
+  { x: 7648, y: 850 },
+  { x: 7988, y: 1530 },
+  { x: 7988, y: 2209 },
+  { x: 7648, y: 2889 },
+  { x: 6798, y: 3229 },
+  { x: 6118, y: 3399 },
+  { x: 5438, y: 3229 },
+  { x: 4759, y: 3569 },
+  { x: 4079, y: 4079 },
+  { x: 3399, y: 4589 },
+  { x: 2379, y: 4929 },
+  { x: 1360, y: 5098 },
+  { x: 510, y: 4759 },
+  { x: 340, y: 4079 },
+  { x: 510, y: 3399 },
+  { x: 850, y: 2719 },
+  { x: 680, y: 2039 },
+  { x: 1020, y: 1530 },
+  { x: 680, y: 1020 },
+  { x: 1020, y: 595 },
+  { x: 2039, y: 476 },
+  { x: 3059, y: 476 },
+  { x: 3569, y: 493 },
+  { x: 3824, y: 502 },
+];
+
+// Fuel can positions spread along Stage 1 track (at key waypoints)
+export const FUEL_CAN_POSITIONS_STAGE1: { x: number; y: number }[] = [
+  { x: 7777, y: 1523 }, // wp 3
+  { x: 6526, y: 4895 }, // wp 7
+  { x: 4133, y: 4840 }, // wp 10
+  { x: 1196, y: 5330 }, // wp 14
+  { x: 653, y: 2502 }, // wp 17
+  { x: 3100, y: 598 }, // wp 20
+];
+
+// Fuel can positions spread along Stage 2 track
+export const FUEL_CAN_POSITIONS_STAGE2: { x: number; y: number }[] = [
+  { x: 7648, y: 850 }, // wp 3
+  { x: 6798, y: 3229 }, // wp 7
+  { x: 4759, y: 3569 }, // wp 10
+  { x: 1360, y: 5098 }, // wp 14
+  { x: 510, y: 3399 }, // wp 17
+  { x: 1020, y: 1530 }, // wp 20
 ];
